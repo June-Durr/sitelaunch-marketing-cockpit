@@ -12,7 +12,8 @@
     "test": "vitest run",
     "screenshots": "node scripts/screenshots.mjs",
     "test:backup-e2e": "node scripts/backup-e2e.mjs",
-    "test:activity-e2e": "node scripts/activity-e2e.mjs"
+    "test:activity-e2e": "node scripts/activity-e2e.mjs",
+    "test:db": "vitest run src/test/pg"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.116.0",
@@ -22,6 +23,7 @@
     "recharts": "^3.10.1"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.8",
     "@testing-library/dom": "^10.4.2",
     "@testing-library/react": "^16.3.3",
     "@types/node": "^24.13.3",

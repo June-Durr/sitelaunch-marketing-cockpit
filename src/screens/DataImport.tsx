@@ -209,7 +209,7 @@ export function DataImport() {
             </button>
           ) : (
             <span className="field-hint">
-              Seeding on Supabase runs through supabase/migrations/0002_seed.sql.
+              On Supabase, seed records come from supabase/seed.sql, run by hand once you are signed in.
             </span>
           )}
           <button className="btn btn-quiet" onClick={() => void refresh()}>

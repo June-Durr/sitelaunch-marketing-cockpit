@@ -28,6 +28,7 @@ browser-local storage adapter, seeded with the verified starting records.
 | `npm run screenshots` | Capture every screen at 1440x900 and 390x844, flagging overflow |
 | `npm run test:backup-e2e` | Real-browser export, mutate, restore check (dev server must be running) |
 | `npm run test:activity-e2e` | Real-browser check that finishing a task logs one activity and no more |
+| `npm run test:db` | Runs every migration against a real Postgres and exercises the constraints |
 | `npm run lint` | oxlint |
 | `npm run typecheck` | `tsc -b --noEmit` |
 
@@ -117,6 +118,13 @@ Database protections, in migration 0004:
   `(id, owner_id)` and every child references that composite key, so a cross-owner link
   fails a foreign key check inside the database whatever the app does.
 - **`owner_id` cannot be changed** after a row exists.
+- **Every composite `SET NULL` names the column it clears.** This is not cosmetic. A
+  bare `ON DELETE SET NULL` clears every column in the foreign key, and `owner_id` is
+  part of these keys and is `NOT NULL`, so deleting a parent failed outright. It also
+  tried to change `owner_id`, which the trigger above forbids. Deleting an account was
+  impossible until this was fixed, and no amount of reading the SQL revealed it. It
+  took running the migrations against a real Postgres, which `npm run test:db` now
+  does on every run.
 
 ## How integration data will flow
 
@@ -175,16 +183,31 @@ do not block, since the row still holds its own data.
 
 ## Connecting Supabase
 
-1. Apply `supabase/migrations/0001_init.sql`, then `0002_seed.sql`.
-2. Copy `.env.example` to `.env` and fill in:
+Full instructions, including why the order matters, are in
+[supabase/README.md](supabase/README.md). The short version:
+
+```
+1. Create the project.
+2. Apply migrations 0001, 0003, 0004, 0005 in that order.
+3. Create a user: sign in through the app once, or add one in the dashboard.
+4. Optional, demonstration data only: signed in as that user, run supabase/seed.sql.
+5. Copy .env.example to .env and fill in the two values below.
+```
 
 ```
 VITE_SUPABASE_URL=https://<project>.supabase.co
 VITE_SUPABASE_ANON_KEY=<anon key>
 ```
 
-The adapter swaps underneath the app, no screen changes. Row-level security scopes every
-table to `auth.uid()`.
+There is no 0002. It was the seed, and it moved to `supabase/seed.sql` because it
+needs a user to exist and a migration runs before anybody has signed up. The number is
+left as a documented gap rather than renumbered.
+
+Requires PostgreSQL 15 or newer, for `security_invoker` views and for
+`ON DELETE SET NULL (column)`. Supabase is well past both.
+
+The adapter swaps underneath the app, no screen changes. Row level security scopes
+every table to `auth.uid()`.
 
 ## Deploying
 
@@ -233,12 +256,14 @@ src/
   types/         Domain and integration types mirroring the SQL schema
 server/          Server side contracts. Never imported by src, never bundled.
   integrations/  Calendar and analytics sync contracts, no credentials
-supabase/migrations/
-  0001_init.sql                 Tables, enums, RLS, cohort view
-  0002_seed.sql                 The verified starting records
-  0003_activity_and_calendar.sql Activity log, calendar columns, dedup indexes
-  0004_security_hardening.sql   security_invoker views, cross-owner protection
-  0005_integrations.sql         Connections, sync runs, daily GA4 and Search Console
+supabase/
+  README.md                      Migration order and the fresh project sequence
+  seed.sql                       Demonstration records. Run by hand, needs a user.
+  migrations/
+    0001_init.sql                Tables, enums, RLS, cohort view
+    0003_activity_and_calendar.sql Activity log, calendar columns, dedup indexes
+    0004_security_hardening.sql  security_invoker views, cross-owner protection
+    0005_integrations.sql        Connections, sync runs, daily GA4 and Search Console
 ```
 
 ## Not in this version

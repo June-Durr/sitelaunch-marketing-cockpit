@@ -1,5 +1,5 @@
 /**
- * Verified seed records, the TypeScript mirror of supabase/migrations/0002_seed.sql.
+ * Verified seed records, the TypeScript mirror of supabase/seed.sql.
  *
  * Only observed figures are entered. Everything unobserved stays null. The two
  * files must stay in step; if you change one, change the other.

@@ -56,3 +56,24 @@ secrets from the function's own environment. It uses the service role key, which
 bypasses row level security, so it must set `owner_id` explicitly on every row it
 writes. That is the one place in the system where getting `owner_id` wrong would
 cross owners, which is why it stays small and server side.
+
+Two rules a sync has to honour, both now enforced by the database and covered by
+`npm run test:db`:
+
+- **Upsert, never insert.** Write with `on conflict (owner_id, date, ...) do update`.
+  The unique constraints in migration 0005 are the conflict target. A plain insert
+  of a day already present is rejected.
+- **Never delete what the provider did not mention.** Providers restate history as
+  data settles. Absence from one response is not evidence that a day had no traffic.
+
+## Before writing any of this
+
+The database has to be set up correctly first. See
+[../supabase/README.md](../supabase/README.md) for the migration order, why the seed
+is not a migration, and what `npm run test:db` proves about the constraints.
+
+One correction worth knowing about, because it shaped the schema: every composite
+foreign key that clears a relationship on delete now names the column it clears.
+A bare `ON DELETE SET NULL` clears the whole key, and `owner_id` is part of these
+keys and is `NOT NULL`, so parent deletion was impossible. Any new table a sync adds
+must follow the same pattern.

@@ -41,6 +41,14 @@ grant select on cohort_stats            to authenticated;
 
 -- ---------------------------------------------------------------------------
 -- Problem 2: composite keys that make cross-owner links impossible
+--
+-- Each SET NULL below NAMES the column to clear. This matters more than it looks.
+-- A bare ON DELETE SET NULL clears every column in the foreign key, and owner_id
+-- is part of these keys and is NOT NULL, so deleting a parent would have failed
+-- outright. It would also have tried to change owner_id, which the trigger at the
+-- bottom of this file forbids. Deleting an account was simply impossible.
+--
+-- Naming the column requires Postgres 15 or newer. Supabase is well past that.
 -- ---------------------------------------------------------------------------
 
 alter table accounts       add constraint accounts_id_owner_key       unique (id, owner_id);
@@ -54,7 +62,7 @@ alter table content_items
   add constraint content_items_account_same_owner
   foreign key (account_id, owner_id)
   references accounts (id, owner_id)
-  on delete set null;
+  on delete set null (account_id);
 
 -- performance_snapshots -> content_items
 alter table performance_snapshots drop constraint performance_snapshots_content_item_id_fkey;
@@ -70,7 +78,7 @@ alter table traffic_snapshots
   add constraint traffic_snapshots_content_same_owner
   foreign key (content_item_id, owner_id)
   references content_items (id, owner_id)
-  on delete set null;
+  on delete set null (content_item_id);
 
 -- leads -> content_items
 alter table leads drop constraint leads_content_item_id_fkey;
@@ -78,7 +86,7 @@ alter table leads
   add constraint leads_content_same_owner
   foreign key (content_item_id, owner_id)
   references content_items (id, owner_id)
-  on delete set null;
+  on delete set null (content_item_id);
 
 -- tasks -> content_items, leads
 alter table tasks drop constraint tasks_content_item_id_fkey;
@@ -101,21 +109,21 @@ alter table activity_events
   add constraint activity_events_content_same_owner
   foreign key (content_item_id, owner_id)
   references content_items (id, owner_id)
-  on delete set null;
+  on delete set null (content_item_id);
 
 alter table activity_events drop constraint activity_events_lead_id_fkey;
 alter table activity_events
   add constraint activity_events_lead_same_owner
   foreign key (lead_id, owner_id)
   references leads (id, owner_id)
-  on delete set null;
+  on delete set null (lead_id);
 
 alter table activity_events drop constraint activity_events_task_id_fkey;
 alter table activity_events
   add constraint activity_events_task_same_owner
   foreign key (task_id, owner_id)
   references tasks (id, owner_id)
-  on delete set null;
+  on delete set null (task_id);
 
 -- ---------------------------------------------------------------------------
 -- owner_id must not be reassigned after the fact

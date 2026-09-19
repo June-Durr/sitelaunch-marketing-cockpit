@@ -8,7 +8,7 @@
  * later edit, which is the realistic failure.
  */
 
-import { readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 const dir = 'supabase/migrations';
@@ -219,5 +219,91 @@ describe('the browser bundle carries no secrets', () => {
     // would exist only in the comments.
     expect(shippedSource).not.toContain("from '../../server");
     expect(shippedSource).not.toContain('server/integrations');
+  });
+});
+
+/* ------------------------------------------------------------------------ */
+
+describe('every composite SET NULL names only the nullable column', () => {
+  /**
+   * A bare ON DELETE SET NULL clears every column in the foreign key. owner_id is
+   * part of these keys and is NOT NULL, so a bare action made parent deletion
+   * impossible. src/test/pg/schema.test.ts proves the behaviour against a real
+   * Postgres; this catches the SQL regressing back to the bare form.
+   */
+  const COMPOSITE_SET_NULL: [string, string, string][] = [
+    ['0004_security_hardening.sql', 'content_items_account_same_owner', 'account_id'],
+    ['0004_security_hardening.sql', 'traffic_snapshots_content_same_owner', 'content_item_id'],
+    ['0004_security_hardening.sql', 'leads_content_same_owner', 'content_item_id'],
+    ['0004_security_hardening.sql', 'activity_events_content_same_owner', 'content_item_id'],
+    ['0004_security_hardening.sql', 'activity_events_lead_same_owner', 'lead_id'],
+    ['0004_security_hardening.sql', 'activity_events_task_same_owner', 'task_id'],
+    ['0005_integrations.sql', 'sync_runs_connection_same_owner', 'connection_id'],
+    ['0005_integrations.sql', 'ga4_daily_traffic_connection_same_owner', 'connection_id'],
+    ['0005_integrations.sql', 'search_console_daily_connection_same_owner', 'connection_id'],
+  ];
+
+  for (const [file, constraint, column] of COMPOSITE_SET_NULL) {
+    it(`${constraint} clears only ${column}`, () => {
+      const sql = sqlFor(file);
+      const at = sql.indexOf(constraint);
+      expect(at, `${constraint} is missing`).toBeGreaterThan(-1);
+      const statement = sql.slice(at, sql.indexOf(';', at));
+
+      expect(statement).toContain(`on delete set null (${column})`);
+      expect(statement, 'owner_id must never be in a SET NULL list').not.toMatch(
+        /set null \([^)]*owner_id/,
+      );
+    });
+  }
+
+  it('leaves no composite foreign key using a bare SET NULL', () => {
+    for (const file of ['0004_security_hardening.sql', '0005_integrations.sql']) {
+      const sql = sqlFor(file);
+      // Split on statements so a bare action cannot hide next to a fixed one.
+      for (const statement of sql.split(';')) {
+        if (!statement.includes('foreign key (')) continue;
+        if (!statement.includes('on delete set null')) continue;
+        expect(
+          statement,
+          `${file} has a composite SET NULL with no column list`,
+        ).toMatch(/on delete set null \(\w+\)/);
+      }
+    }
+  });
+
+  it('keeps cascade relationships as cascade, not converted by mistake', () => {
+    const sql = sqlFor('0004_security_hardening.sql');
+    for (const constraint of [
+      'performance_snapshots_content_same_owner',
+      'tasks_content_same_owner',
+      'tasks_lead_same_owner',
+    ]) {
+      const at = sql.indexOf(constraint);
+      const statement = sql.slice(at, sql.indexOf(';', at));
+      expect(statement, constraint).toContain('on delete cascade');
+      expect(statement, constraint).not.toContain('set null');
+    }
+  });
+});
+
+describe('seed data is not a migration', () => {
+  it('lives at supabase/seed.sql, outside the migrations directory', () => {
+    expect(existsSync('supabase/seed.sql')).toBe(true);
+    expect(existsSync('supabase/migrations/0002_seed.sql')).toBe(false);
+  });
+
+  it('no migration depends on a user already existing', () => {
+    for (const file of readdirSync(dir).filter((f) => f.endsWith('.sql'))) {
+      const sql = sqlFor(file);
+      expect(sql, `${file} reads auth.users, so it cannot run on an empty project`)
+        .not.toContain('from auth.users');
+    }
+  });
+
+  it('the seed explains that it needs a user and runs by hand', () => {
+    const seed = readFileSync('supabase/seed.sql', 'utf8');
+    expect(seed).toContain('THIS IS NOT A MIGRATION');
+    expect(seed).toMatch(/auth\.users/);
   });
 });

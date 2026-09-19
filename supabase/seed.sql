@@ -1,5 +1,25 @@
 -- SiteLaunch Marketing Cockpit — verified seed data
 --
+-- THIS IS NOT A MIGRATION, AND IT USED TO BE ONE. THAT WAS A MISTAKE.
+--
+-- Every row here needs an owner, and an owner is a row in auth.users. A migration
+-- runs against an empty database before anybody has signed up, so this file could
+-- not work where it used to live: it would either fail outright or, worse, attach
+-- the records to whichever user happened to exist first.
+--
+-- It now runs by hand, after a user exists, and only when demonstration data is
+-- actually wanted. A real project does not need it at all.
+--
+-- HOW TO RUN IT
+--
+--   1. Apply every file in supabase/migrations in order.
+--   2. Sign in once through the app, or create a user in the Supabase dashboard.
+--   3. Run this file in the SQL editor while signed in as that user.
+--
+-- It attaches to auth.uid() when there is one, and otherwise to the oldest user in
+-- the project. On a project with several users, sign in first so it does not guess.
+--
+--
 -- Everything here is marked is_seed = true so it can be identified and removed.
 -- Only figures that were actually observed are entered. Anything that was not
 -- reported by the platform is left NULL (unknown) or flagged metrics_unavailable

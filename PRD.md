@@ -323,6 +323,21 @@ what the signed in user can read.
    another user's account, content, lead or task, and this is enforced by the database
    rather than by the interface.
 3. **`owner_id` is immutable.** A trigger refuses any update that changes it.
+4. **Every composite `SET NULL` names the column it clears.** A bare
+   `ON DELETE SET NULL` clears every column in the foreign key. Since `owner_id` is
+   part of these keys and is `NOT NULL`, deleting a parent failed outright, and also
+   tried to change `owner_id`, which rule 3 forbids. Deleting an account was
+   impossible. Found by running the migrations against a real Postgres, not by
+   reading them.
+
+**Migration order** is 0001, 0003, 0004, 0005. There is no 0002: it was the seed
+data, and it moved to `supabase/seed.sql` because it needs a user to exist and a
+migration runs before anybody has signed up. See `supabase/README.md`.
+
+**Database testing.** `npm run test:db` applies every migration to a real PostgreSQL
+through PGlite and exercises the constraints, rather than matching strings in the SQL.
+The `auth` schema, `auth.uid()` and the two Supabase roles are stubbed because
+Postgres does not ship them; everything else is the project's own SQL unmodified.
 
 **Integration data flow:**
 

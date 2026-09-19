@@ -232,21 +232,21 @@ alter table sync_runs
   add constraint sync_runs_connection_same_owner
   foreign key (connection_id, owner_id)
   references integration_connections (id, owner_id)
-  on delete set null;
+  on delete set null (connection_id);
 
 alter table ga4_daily_traffic drop constraint ga4_daily_traffic_connection_id_fkey;
 alter table ga4_daily_traffic
   add constraint ga4_daily_traffic_connection_same_owner
   foreign key (connection_id, owner_id)
   references integration_connections (id, owner_id)
-  on delete set null;
+  on delete set null (connection_id);
 
 alter table search_console_daily drop constraint search_console_daily_connection_id_fkey;
 alter table search_console_daily
   add constraint search_console_daily_connection_same_owner
   foreign key (connection_id, owner_id)
   references integration_connections (id, owner_id)
-  on delete set null;
+  on delete set null (connection_id);
 
 -- Readable by the owner. Writes are expected to come from a server function using
 -- the service role, which bypasses RLS, so the browser gets read access only on
