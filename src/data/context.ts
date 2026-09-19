@@ -1,0 +1,47 @@
+import { createContext, useContext } from 'react';
+import type { Dataset } from '../types/domain';
+import type { NewRow, RowPatch, TableMap, TableName } from './repository';
+import { EMPTY_DATASET } from './repository';
+
+export interface DataContextValue {
+  data: Dataset;
+  mode: 'local' | 'supabase';
+  loading: boolean;
+  error: string | null;
+  refresh: () => Promise<void>;
+  insert: <K extends TableName>(table: K, row: NewRow<K>) => Promise<TableMap[K]>;
+  insertMany: <K extends TableName>(table: K, rows: NewRow<K>[]) => Promise<TableMap[K][]>;
+  update: <K extends TableName>(
+    table: K, id: string, patch: RowPatch<K>,
+  ) => Promise<TableMap[K]>;
+  remove: <K extends TableName>(table: K, id: string) => Promise<void>;
+  resetToSeed: (() => Promise<void>) | null;
+  /** Null when the adapter cannot replace the whole dataset (Supabase). */
+  replaceAll: ((data: Dataset) => Promise<void>) | null;
+}
+
+export const DataContext = createContext<DataContextValue>({
+  data: EMPTY_DATASET,
+  mode: 'local',
+  loading: true,
+  error: null,
+  refresh: async () => {},
+  insert: async () => {
+    throw new Error('DataProvider missing');
+  },
+  insertMany: async () => {
+    throw new Error('DataProvider missing');
+  },
+  update: async () => {
+    throw new Error('DataProvider missing');
+  },
+  remove: async () => {
+    throw new Error('DataProvider missing');
+  },
+  resetToSeed: null,
+  replaceAll: null,
+});
+
+export function useData(): DataContextValue {
+  return useContext(DataContext);
+}
