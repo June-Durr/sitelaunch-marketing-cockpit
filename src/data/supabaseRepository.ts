@@ -5,8 +5,107 @@
  */
 
 import type { Dataset } from '../types/domain';
-import type { NewRow, Repository, RowPatch, TableMap, TableName } from './repository';
+import type {
+  ImportReport, NewRow, Repository, RowPatch, TableMap, TableName,
+} from './repository';
+import { IMPORT_ORDER } from './repository';
 import { getSupabase } from './supabaseClient';
+
+/** Table name -> its array in the in-memory Dataset. */
+const TABLE_TO_COLLECTION: Record<TableName, keyof Dataset> = {
+  accounts: 'accounts',
+  content_items: 'contentItems',
+  performance_snapshots: 'snapshots',
+  traffic_snapshots: 'traffic',
+  leads: 'leads',
+  tasks: 'tasks',
+  recommendations: 'recommendations',
+  activity_events: 'activityEvents',
+};
+
+/** PostgREST takes one request per call, so long tables go up in batches. */
+const IMPORT_BATCH_SIZE = 200;
+
+/**
+ * Every column holding another row's id, per table.
+ *
+ * These are what an id rewrite has to follow. Miss one and the row still imports,
+ * but the link it carried is quietly broken, which is worse than a failed import
+ * because nothing announces it.
+ */
+const REFERENCE_FIELDS: Record<TableName, string[]> = {
+  accounts: [],
+  content_items: ['account_id', 'cross_post_group_id'],
+  performance_snapshots: ['content_item_id'],
+  traffic_snapshots: ['content_item_id'],
+  leads: ['content_item_id'],
+  tasks: ['content_item_id', 'lead_id'],
+  recommendations: [],
+  activity_events: ['content_item_id', 'lead_id', 'task_id'],
+};
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function newUuid(): string {
+  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) return crypto.randomUUID();
+  // Only reached on a runtime without the Web Crypto API. Version 4 shape.
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);
+  });
+}
+
+/**
+ * Old id -> new id, for every id in the dataset that Postgres would refuse.
+ *
+ * Browser-local mode accepts any string as an id, and the seed records use
+ * readable ones like "acc-instagram-0001". Every id column in the database is a
+ * uuid, so those have to be rewritten. The rewrite is done once, up front, for
+ * the whole dataset, so an id and every reference to it always change together.
+ * Ids that are already uuids are left exactly as they are.
+ */
+export function buildIdMap(data: Dataset): Map<string, string> {
+  const map = new Map<string, string>();
+  const consider = (value: unknown) => {
+    if (typeof value !== 'string' || value === '' || UUID_RE.test(value)) return;
+    if (!map.has(value)) map.set(value, newUuid());
+  };
+
+  for (const table of IMPORT_ORDER) {
+    const rows = (data[TABLE_TO_COLLECTION[table]] ?? []) as unknown as Record<
+      string,
+      unknown
+    >[];
+    for (const row of rows) {
+      consider(row.id);
+      // Group ids are uuids in the database but name no row, so they are collected
+      // here rather than from any table's primary key.
+      for (const field of REFERENCE_FIELDS[table]) consider(row[field]);
+    }
+  }
+  return map;
+}
+
+/**
+ * owner_id is never sent. The column defaults to auth.uid() and the row level
+ * security policy checks it on the way in, so letting the database fill it is
+ * both simpler and the only version that cannot write a row under the wrong
+ * account. A backup that somehow carries the field has it stripped here.
+ */
+export function forImport(
+  table: TableName,
+  row: Record<string, unknown>,
+  idMap: Map<string, string>,
+): Record<string, unknown> {
+  const { owner_id: _ignored, ...rest } = row;
+  const id = rest.id;
+  if (typeof id === 'string' && idMap.has(id)) rest.id = idMap.get(id);
+  for (const field of REFERENCE_FIELDS[table]) {
+    const value = rest[field];
+    if (typeof value === 'string' && idMap.has(value)) rest[field] = idMap.get(value);
+  }
+  return rest;
+}
 
 export function createSupabaseRepository(): Repository {
   const db = getSupabase();
@@ -76,5 +175,111 @@ export function createSupabaseRepository(): Repository {
       const { error } = await db.from(table).delete().eq('id', id);
       if (error) throw new Error(`${table}: ${error.message}`);
     },
+
+    countAll,
+
+    async importDataset(data: Dataset): Promise<ImportReport> {
+      const inserted = Object.fromEntries(
+        IMPORT_ORDER.map((t) => [t, 0]),
+      ) as Record<TableName, number>;
+
+      // Refuse before writing anything if the account already holds data. This is
+      // the guarantee that makes the import safe to run: an import that cannot
+      // start cannot half-finish.
+      const existing = await countAll();
+      const blockedBy = IMPORT_ORDER.filter((t) => existing[t] > 0).map((table) => ({
+        table,
+        existing: existing[table],
+      }));
+      if (blockedBy.length > 0) {
+        return { inserted, blockedBy, failure: null, rolledBack: null, remappedIds: 0 };
+      }
+
+      // Rewrite any id Postgres would refuse, once, for the whole dataset.
+      const idMap = buildIdMap(data);
+
+      // Ids of what this import wrote, so a failure can be undone precisely.
+      const written: { table: TableName; ids: string[] }[] = [];
+
+      for (const table of IMPORT_ORDER) {
+        const rows = (data[TABLE_TO_COLLECTION[table]] ?? []) as unknown as Record<
+          string,
+          unknown
+        >[];
+        if (rows.length === 0) continue;
+
+        const ids: string[] = [];
+        try {
+          for (let i = 0; i < rows.length; i += IMPORT_BATCH_SIZE) {
+            const batch = rows
+              .slice(i, i + IMPORT_BATCH_SIZE)
+              .map((row) => forImport(table, row, idMap));
+            const { data: created, error } = await db.from(table).insert(batch).select('id');
+            if (error) throw new Error(error.message);
+            for (const row of created ?? []) ids.push((row as { id: string }).id);
+            inserted[table] = ids.length;
+          }
+          written.push({ table, ids });
+        } catch (err) {
+          // Partway through. Put the database back to the empty state it was in,
+          // newest table first so children go before the parents they point at.
+          written.push({ table, ids });
+          const rolledBack = await undo(written);
+          return {
+            inserted,
+            blockedBy: [],
+            failure: {
+              table,
+              message: err instanceof Error ? err.message : String(err),
+            },
+            rolledBack,
+            remappedIds: idMap.size,
+          };
+        }
+      }
+
+      return {
+        inserted,
+        blockedBy: [],
+        failure: null,
+        rolledBack: null,
+        remappedIds: idMap.size,
+      };
+    },
   };
+
+  /** Rows this account can see in each table. */
+  async function countAll(): Promise<Record<TableName, number>> {
+    const entries = await Promise.all(
+      IMPORT_ORDER.map(async (table) => {
+        // head:true asks for the count and no rows, so this stays cheap. The count
+        // is what row level security lets this account see, which is exactly the
+        // question being asked.
+        const { count, error } = await db
+          .from(table)
+          .select('id', { count: 'exact', head: true });
+        if (error) throw new Error(`${table}: ${error.message}`);
+        return [table, count ?? 0] as const;
+      }),
+    );
+    return Object.fromEntries(entries) as Record<TableName, number>;
+  }
+
+  /** Delete exactly what an aborted import wrote, children before parents. */
+  async function undo(
+    written: { table: TableName; ids: string[] }[],
+  ): Promise<{ ok: boolean; message: string | null }> {
+    const problems: string[] = [];
+    for (const { table, ids } of [...written].reverse()) {
+      for (let i = 0; i < ids.length; i += IMPORT_BATCH_SIZE) {
+        const batch = ids.slice(i, i + IMPORT_BATCH_SIZE);
+        if (batch.length === 0) continue;
+        const { error } = await db.from(table).delete().in('id', batch);
+        if (error) problems.push(`${table}: ${error.message}`);
+      }
+    }
+    return problems.length === 0
+      ? { ok: true, message: null }
+      : { ok: false, message: problems.join('; ') };
+  }
 }

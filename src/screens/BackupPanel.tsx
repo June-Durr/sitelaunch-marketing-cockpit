@@ -35,7 +35,7 @@ const TABLE_LABELS: Record<TableName, string> = {
  * importer does before that button can alter the current dataset.
  */
 export function BackupPanel() {
-  const { data, mode, replaceAll } = useData();
+  const { data, mode, replaceAll, importDataset } = useData();
   const [stage, setStage] = useState<Stage>({ kind: 'idle' });
   const [lastExport, setLastExport] = useState<string | null>(null);
 
@@ -71,6 +71,53 @@ export function BackupPanel() {
     setStage({ kind: 'reviewing', filename: file.name, result: parseAndValidate(text) });
   }
 
+  async function importStaged() {
+    if (stage.kind !== 'reviewing' || !stage.result.ok || !importDataset) return;
+    const { data: restored, settings, backup } = stage.result;
+    setStage({ kind: 'applying' });
+    try {
+      const report = await importDataset(restored);
+
+      if (report.blockedBy.length > 0) {
+        const held = report.blockedBy
+          .map((b) => `${TABLE_LABELS[b.table]} (${b.existing})`)
+          .join(', ');
+        setStage({
+          kind: 'done',
+          message: `Nothing was imported. Your account already holds records in ${held}. The importer only writes into an empty account, so that existing data cannot be overwritten or duplicated.`,
+        });
+        return;
+      }
+
+      if (report.failure) {
+        const undone = report.rolledBack?.ok
+          ? 'Every row this import had already written was removed again, so your account is back to empty.'
+          : `The rows already written could not all be removed: ${report.rolledBack?.message ?? 'unknown problem'}.`;
+        setStage({
+          kind: 'done',
+          message: `Import stopped at ${TABLE_LABELS[report.failure.table]}: ${report.failure.message}. ${undone}`,
+        });
+        return;
+      }
+
+      writeSettings(settings);
+      const total = Object.values(report.inserted).reduce((a, b) => a + b, 0);
+      const remapped =
+        report.remappedIds > 0
+          ? ` ${report.remappedIds} ids were rewritten as uuids, which the database requires; every link between records was rewritten to match, so nothing came unlinked.`
+          : '';
+      setStage({
+        kind: 'done',
+        message: `Imported ${total} records from ${backup.exported_at.slice(0, 10)} into your Supabase account. Nothing was deleted, and the copy in this browser is untouched.${remapped}`,
+      });
+    } catch (err) {
+      setStage({
+        kind: 'done',
+        message: `Import failed: ${err instanceof Error ? err.message : String(err)}.`,
+      });
+    }
+  }
+
   async function applyStaged() {
     if (stage.kind !== 'reviewing' || !stage.result.ok || !replaceAll) return;
     const { data: restored, settings, backup } = stage.result;
@@ -98,7 +145,7 @@ export function BackupPanel() {
       <p className="page-lede" style={{ marginTop: 0 }}>
         {mode === 'local'
           ? 'This browser holds the only copy of your data. Export a backup file before you clear site data, switch machines, or try anything you might regret.'
-          : 'Data is stored in Supabase. Export still works as a point-in-time snapshot, but restoring into Supabase is not part of this version.'}
+          : 'Data is stored in Supabase. Export takes a point-in-time snapshot. A backup can also be imported, which is how you move data off a browser, but only into an account that holds no records yet, so an import can never overwrite what is already there.'}
       </p>
 
       <div className="btn-row">
@@ -153,7 +200,9 @@ export function BackupPanel() {
 
       {stage.kind === 'reviewing' && stage.result.ok ? (
         <div className="restore-review">
-          <div className="next-step-kicker">Review before replacing</div>
+          <div className="next-step-kicker">
+            {mode === 'supabase' ? 'Review before importing' : 'Review before replacing'}
+          </div>
           <p style={{ margin: '0 0 1rem' }}>
             <strong>{stage.filename}</strong> is a valid backup, exported{' '}
             {formatDateTime(stage.result.backup.exported_at)}.
@@ -163,7 +212,7 @@ export function BackupPanel() {
             <thead>
               <tr>
                 <th>Table</th>
-                <th className="num">In this browser now</th>
+                <th className="num">{mode === 'supabase' ? 'In your account now' : 'In this browser now'}</th>
                 <th className="num">In the backup</th>
               </tr>
             </thead>
@@ -212,7 +261,21 @@ export function BackupPanel() {
             </>
           ) : null}
 
-          {currentTotal > 0 ? (
+          {mode === 'supabase' ? (
+            currentTotal > 0 ? (
+              <Notice tone="crimson">
+                Your account already holds {currentTotal} records, so this import will
+                refuse to run. It only writes into an empty account, which is what stops
+                it ever overwriting or duplicating what you already have.
+              </Notice>
+            ) : (
+              <Notice>
+                Your account holds no records yet. This adds {totalRows(incomingCounts)}{' '}
+                records and deletes nothing. The copy in this browser stays exactly as it
+                is, so you can run this again if anything looks wrong.
+              </Notice>
+            )
+          ) : currentTotal > 0 ? (
             <Notice tone="crimson">
               This will replace all {currentTotal} records currently in this browser. You
               cannot get them back afterwards unless you exported them first.
@@ -228,6 +291,14 @@ export function BackupPanel() {
             {replaceAll ? (
               <button className="btn btn-danger-solid" onClick={applyStaged}>
                 Replace all data with this backup
+              </button>
+            ) : importDataset ? (
+              <button
+                className="btn btn-primary"
+                disabled={currentTotal > 0}
+                onClick={importStaged}
+              >
+                Import this backup into Supabase
               </button>
             ) : (
               <span className="field-hint">

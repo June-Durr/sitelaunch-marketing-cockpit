@@ -86,6 +86,13 @@ export function DataProvider({ children }: { children: ReactNode }) {
             await refresh();
           }
         : null,
+      importDataset: repo.importDataset
+        ? async (next: Dataset) => {
+            const report = await repo.importDataset!(next);
+            await refresh();
+            return report;
+          }
+        : null,
     }),
     [data, error, loading, refresh, repo],
   );

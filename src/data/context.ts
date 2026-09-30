@@ -1,6 +1,6 @@
 import { createContext, useContext } from 'react';
 import type { Dataset } from '../types/domain';
-import type { NewRow, RowPatch, TableMap, TableName } from './repository';
+import type { ImportReport, NewRow, RowPatch, TableMap, TableName } from './repository';
 import { EMPTY_DATASET } from './repository';
 
 export interface DataContextValue {
@@ -18,6 +18,11 @@ export interface DataContextValue {
   resetToSeed: (() => Promise<void>) | null;
   /** Null when the adapter cannot replace the whole dataset (Supabase). */
   replaceAll: ((data: Dataset) => Promise<void>) | null;
+  /**
+   * Null in browser-local mode, where replaceAll is the restore path instead.
+   * On Supabase this copies a backup in without deleting or overwriting anything.
+   */
+  importDataset: ((data: Dataset) => Promise<ImportReport>) | null;
 }
 
 export const DataContext = createContext<DataContextValue>({
@@ -40,6 +45,7 @@ export const DataContext = createContext<DataContextValue>({
   },
   resetToSeed: null,
   replaceAll: null,
+  importDataset: null,
 });
 
 export function useData(): DataContextValue {
