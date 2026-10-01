@@ -2,6 +2,9 @@ import type {
   Account, ActivityEvent, ContentItem, Dataset, Lead, PerformanceSnapshot,
   Recommendation, Task, TrafficSnapshot,
 } from '../types/domain';
+import type {
+  Ga4DailyTraffic, IntegrationConnection, SearchConsoleDaily, SyncRun,
+} from '../types/integrations';
 
 export interface TableMap {
   accounts: Account;
@@ -59,6 +62,41 @@ export interface ImportReport {
   remappedIds: number;
 }
 
+/** The two providers that sync automatically. */
+export type AnalyticsProvider = 'ga4' | 'search_console';
+
+/**
+ * Which window a sync should ask for.
+ *
+ * 'daily' is the rolling week of completed days, 'backfill' is everything since
+ * the agreed start date. The server decides what those mean; the browser only
+ * names one. The sync window rules live with the server integration code, which
+ * this file deliberately does not reference by path, because the browser must
+ * never import across that boundary.
+ */
+export type SyncMode = 'daily' | 'backfill';
+
+/**
+ * Everything the Cockpit knows about automatic syncing, read straight from the
+ * tables the server function writes.
+ */
+export interface AnalyticsStatus {
+  connections: IntegrationConnection[];
+  /** Most recent first, already trimmed to a useful number. */
+  runs: SyncRun[];
+  ga4: Ga4DailyTraffic[];
+  searchConsole: SearchConsoleDaily[];
+}
+
+/** What came back from asking the server to sync. Never carries a credential. */
+export interface SyncTriggerOutcome {
+  ok: boolean;
+  status: string;
+  rowsWritten: number | null;
+  /** Already sanitized server side. Safe to display. */
+  error: string | null;
+}
+
 /**
  * The single data boundary of the application.
  *
@@ -83,6 +121,21 @@ export interface Repository {
   replaceAll?(data: Dataset): Promise<void>;
   /** Rows currently held per table. Used to prove a database is empty before an import. */
   countAll?(): Promise<Record<TableName, number>>;
+  /**
+   * Supabase adapter only: everything the Cockpit shows about automatic syncing.
+   *
+   * Read only, and deliberately separate from loadAll. This data is written by a
+   * server side function, never by the browser, so it does not belong in the
+   * dataset the rest of the app edits.
+   */
+  loadAnalytics?(): Promise<AnalyticsStatus>;
+  /**
+   * Supabase adapter only: ask the server to sync now.
+   *
+   * The browser sends its own session and nothing else. It holds no Google
+   * credential, so this is a request for work rather than the work itself.
+   */
+  triggerSync?(provider: AnalyticsProvider, mode: SyncMode): Promise<SyncTriggerOutcome>;
   /**
    * Supabase adapter only: copy a whole dataset in, for the one-time move off
    * browser-local storage.

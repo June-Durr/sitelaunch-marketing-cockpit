@@ -3,7 +3,8 @@ import type { Dataset } from '../types/domain';
 import { DataContext, type DataContextValue } from './context';
 import { createLocalRepository } from './localRepository';
 import {
-  EMPTY_DATASET, type NewRow, type Repository, type RowPatch, type TableName,
+  EMPTY_DATASET, type AnalyticsProvider, type NewRow, type Repository, type RowPatch,
+  type SyncMode, type TableName,
 } from './repository';
 import { supabaseConfigured } from './supabaseClient';
 import { createSupabaseRepository } from './supabaseRepository';
@@ -92,6 +93,12 @@ export function DataProvider({ children }: { children: ReactNode }) {
             await refresh();
             return report;
           }
+        : null,
+      // Neither of these refreshes the dataset: synced analytics live in their own
+      // tables and nothing in the editable dataset changes when they arrive.
+      loadAnalytics: repo.loadAnalytics ? () => repo.loadAnalytics!() : null,
+      triggerSync: repo.triggerSync
+        ? (provider: AnalyticsProvider, mode: SyncMode) => repo.triggerSync!(provider, mode)
         : null,
     }),
     [data, error, loading, refresh, repo],

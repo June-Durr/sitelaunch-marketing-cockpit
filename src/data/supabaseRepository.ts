@@ -6,10 +6,14 @@
 
 import type { Dataset } from '../types/domain';
 import type {
-  ImportReport, NewRow, Repository, RowPatch, TableMap, TableName,
+  AnalyticsProvider, AnalyticsStatus, ImportReport, NewRow, Repository, RowPatch,
+  SyncMode, SyncTriggerOutcome, TableMap, TableName,
 } from './repository';
 import { IMPORT_ORDER } from './repository';
-import { getSupabase } from './supabaseClient';
+import type {
+  Ga4DailyTraffic, IntegrationConnection, SearchConsoleDaily, SyncRun,
+} from '../types/integrations';
+import { functionsBaseUrl, getSupabase } from './supabaseClient';
 
 /** Table name -> its array in the in-memory Dataset. */
 const TABLE_TO_COLLECTION: Record<TableName, keyof Dataset> = {
@@ -246,7 +250,107 @@ export function createSupabaseRepository(): Repository {
         remappedIds: idMap.size,
       };
     },
+
+    /**
+     * What the automatic sync has been doing.
+     *
+     * Row level security limits every one of these to this account, and none of
+     * these tables has a token column, so there is nothing here the browser
+     * should not see. A table that has not been created yet is reported as empty
+     * rather than as an error, so a project that has not applied migration 0005
+     * still loads the rest of the screen.
+     */
+    async loadAnalytics(): Promise<AnalyticsStatus> {
+      const [connections, runs, ga4, searchConsole] = await Promise.all([
+        selectOptional<IntegrationConnection>(
+          'integration_connections', 'provider', true, 50,
+        ),
+        selectOptional<SyncRun>('sync_runs', 'started_at', false, 50),
+        selectOptional<Ga4DailyTraffic>('ga4_daily_traffic', 'date', false, 2000),
+        selectOptional<SearchConsoleDaily>('search_console_daily', 'date', false, 2000),
+      ]);
+      return { connections, runs, ga4, searchConsole };
+    },
+
+    /**
+     * Ask the server to sync now.
+     *
+     * Sends this browser's session and nothing else. The Google credential lives
+     * in the function's own secrets, so a person pressing this button never holds
+     * it and the network request cannot carry it.
+     */
+    async triggerSync(
+      provider: AnalyticsProvider,
+      mode: SyncMode,
+    ): Promise<SyncTriggerOutcome> {
+      const { data: session } = await db.auth.getSession();
+      const token = session.session?.access_token;
+      if (!token) {
+        return { ok: false, status: 'not_signed_in', rowsWritten: null, error: 'Sign in first.' };
+      }
+
+      const name = provider === 'ga4' ? 'sync-ga4' : 'sync-search-console';
+      let response: Response;
+      try {
+        response = await fetch(`${functionsBaseUrl()}/${name}`, {
+          method: 'POST',
+          headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+          body: JSON.stringify({ mode }),
+        });
+      } catch {
+        // A function that has not been deployed yet fails here, and saying so is
+        // more use than a raw network error.
+        return {
+          ok: false,
+          status: 'unreachable',
+          rowsWritten: null,
+          error: 'Could not reach the sync function. It may not be deployed yet.',
+        };
+      }
+
+      let body: { status?: string; rowsWritten?: number; error?: string } = {};
+      try {
+        body = (await response.json()) as typeof body;
+      } catch {
+        body = {};
+      }
+
+      return {
+        ok: response.ok,
+        status: body.status ?? (response.ok ? 'unknown' : `http_${response.status}`),
+        rowsWritten: typeof body.rowsWritten === 'number' ? body.rowsWritten : null,
+        error: body.error ?? null,
+      };
+    },
   };
+
+  /**
+   * Select from a table that may not exist yet.
+   *
+   * Migration 0005 is separate from 0001, so a project can be perfectly healthy
+   * and still have no integration tables. Treating that as empty rather than as a
+   * failure keeps the Data screen usable instead of blanking it over a feature
+   * that has not been set up.
+   */
+  async function selectOptional<T>(
+    table: string,
+    orderBy: string,
+    ascending: boolean,
+    limit: number,
+  ): Promise<T[]> {
+    const { data, error } = await db
+      .from(table)
+      .select('*')
+      .order(orderBy, { ascending, nullsFirst: false })
+      .limit(limit);
+
+    if (error) {
+      // 42P01 is "relation does not exist". Anything else is a real problem.
+      if (error.code === '42P01') return [];
+      throw new Error(`${table}: ${error.message}`);
+    }
+    return (data ?? []) as T[];
+  }
 
   /** Rows this account can see in each table. */
   async function countAll(): Promise<Record<TableName, number>> {

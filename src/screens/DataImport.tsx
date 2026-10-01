@@ -4,6 +4,7 @@ import { Drawer } from '../components/Drawer';
 import { BackupPanel } from './BackupPanel';
 import { ProgramPanel } from './ProgramPanel';
 import { IntegrationsPanel } from './IntegrationsPanel';
+import { GoogleSyncPanel } from './GoogleSyncPanel';
 import { Empty, Field, Notice, PageHead, Section } from '../components/primitives';
 import { csvNumber, matchHeader, parseCsv } from '../lib/csv';
 import { today } from '../lib/dates';
@@ -185,6 +186,8 @@ export function DataImport() {
         </div>
         {importReport ? <p className="notice notice-violet">{importReport}</p> : null}
       </Section>
+
+      <GoogleSyncPanel />
 
       <IntegrationsPanel />
 

@@ -14,6 +14,17 @@ is not.
 | 2 | `migrations/0003_activity_and_calendar.sql` | Activity log, calendar columns on tasks and activity, the deduplication indexes |
 | 3 | `migrations/0004_security_hardening.sql` | `security_invoker` on both views, composite owner keys, the `owner_id` trigger |
 | 4 | `migrations/0005_integrations.sql` | Connections, sync runs, daily GA4 and Search Console tables |
+| 5 | `migrations/0006_analytics_schedule.sql` | pg_cron and pg_net, plus the helper the daily sync schedule calls. Creates no cron job. |
+
+Migration 0006 starts nothing. It installs what a schedule needs and leaves the two
+`cron.schedule` statements commented at the bottom of the file, to be run by hand once
+the Edge Functions are deployed and tested. Applying it calls no Google property and
+changes no behaviour.
+
+It is also the one migration the PGlite test harness does not apply, because `pg_cron`
+and `pg_net` are Supabase extensions that do not exist in plain Postgres. Everything
+0006 contains is therefore unverified by the test suite and has to be checked against
+the hosted project.
 
 Requires **PostgreSQL 15 or newer**, for two reasons: `security_invoker` on views, and
 `ON DELETE SET NULL (column)` naming which column to clear. Supabase is well past both.

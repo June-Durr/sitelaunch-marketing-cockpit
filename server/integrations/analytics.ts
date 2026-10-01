@@ -84,3 +84,24 @@ export function normalizeDimension(value: string | null | undefined): string {
   const trimmed = (value ?? '').trim();
   return trimmed === '' ? NO_DIMENSION : trimmed;
 }
+
+/**
+ * A metric value from a provider, as a number or as null.
+ *
+ * The opposite rule to normalizeDimension, and the reason both exist. A missing
+ * dimension is a real category, "no campaign", so it gets a placeholder. A missing
+ * metric is not a measurement of nothing, it is the absence of a measurement, so
+ * it stays null and every screen downstream can keep saying it does not know.
+ *
+ * The distinction that matters most here is "0" against "". Both are falsy, and
+ * treating them alike is the single easiest way to turn "we have no idea" into
+ * "we had no visitors". A real zero from the API survives as 0.
+ */
+export function parseMetric(value: string | number | null | undefined): number | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  const trimmed = value.trim();
+  if (trimmed === '') return null;
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) ? parsed : null;
+}

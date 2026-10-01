@@ -8,6 +8,7 @@ import { formatDay, today } from '../lib/dates';
 import { metricToInput, parseMetricInput } from '../lib/format';
 import { aggregate } from '../lib/metrics';
 import type { TrafficSnapshot } from '../types/domain';
+import { SyncedAnalytics } from './SyncedAnalytics';
 
 const blank = (v: string) => (v.trim() === '' ? null : v.trim());
 
@@ -25,7 +26,7 @@ export function WebsiteOutcomes() {
       <PageHead
         kicker="What the website saw"
         title="Website Outcomes"
-        lede="What happened on your website. Type the numbers in yourself, or bring them in from a Google Analytics export. A row only gets linked to a post when you say so, because a matching tag is a hint and not proof."
+        lede="What happened on your website. Google Analytics and Search Console now sync themselves daily, and those days appear further down, labelled as synced. The table immediately below is the fallback: rows you typed in or imported from an export, for the days nothing was syncing. A row only gets linked to a post when you say so, because a matching tag is a hint and not proof."
         action={
           <button className="btn btn-primary" onClick={() => setEditing({ row: null })}>
             Record outcome
@@ -126,6 +127,8 @@ export function WebsiteOutcomes() {
           </table>
         </div>
       )}
+
+      <SyncedAnalytics />
 
       <DataLegend />
 

@@ -1,6 +1,9 @@
 import { createContext, useContext } from 'react';
 import type { Dataset } from '../types/domain';
-import type { ImportReport, NewRow, RowPatch, TableMap, TableName } from './repository';
+import type {
+  AnalyticsProvider, AnalyticsStatus, ImportReport, NewRow, RowPatch, SyncMode,
+  SyncTriggerOutcome, TableMap, TableName,
+} from './repository';
 import { EMPTY_DATASET } from './repository';
 
 export interface DataContextValue {
@@ -23,6 +26,15 @@ export interface DataContextValue {
    * On Supabase this copies a backup in without deleting or overwriting anything.
    */
   importDataset: ((data: Dataset) => Promise<ImportReport>) | null;
+  /**
+   * Null in browser-local mode, which has no server to sync from.
+   *
+   * Read separately from the dataset rather than folded into it, because these
+   * rows are written by a server function and are not editable here.
+   */
+  loadAnalytics: (() => Promise<AnalyticsStatus>) | null;
+  /** Null in browser-local mode. Asks the server to sync; never syncs in here. */
+  triggerSync: ((provider: AnalyticsProvider, mode: SyncMode) => Promise<SyncTriggerOutcome>) | null;
 }
 
 export const DataContext = createContext<DataContextValue>({
@@ -46,6 +58,8 @@ export const DataContext = createContext<DataContextValue>({
   resetToSeed: null,
   replaceAll: null,
   importDataset: null,
+  loadAnalytics: null,
+  triggerSync: null,
 });
 
 export function useData(): DataContextValue {
