@@ -33,3 +33,10 @@ screenshots/
 
 # Build info
 *.tsbuildinfo
+
+# Supabase CLI scratch state, including the linked project ref.
+supabase/.temp/
+
+# Google service account key. Read once to set a function secret, never committed.
+.google-service-account.json
+*service-account*.json

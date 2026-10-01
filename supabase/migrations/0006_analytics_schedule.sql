@@ -34,6 +34,12 @@
 -- can only run SQL and an Edge Function is reached over HTTP.
 -- ---------------------------------------------------------------------------
 
+-- pg_cron ignores the schema asked for here and installs itself into pg_catalog,
+-- because its own control file fixes that and the schema clause is not an error.
+-- Its scheduling functions live in the cron schema either way, so cron.schedule
+-- below is correct. pg_net does land in extensions, and its functions live in the
+-- net schema, which is why the helper calls net.http_post by its full name rather
+-- than relying on search_path.
 create extension if not exists pg_cron with schema extensions;
 create extension if not exists pg_net with schema extensions;
 

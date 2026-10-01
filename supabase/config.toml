@@ -1,0 +1,21 @@
+# Supabase CLI project configuration.
+#
+# This file exists for one reason that matters: it records verify_jwt = false for
+# both sync functions, so a deploy cannot accidentally be made with platform JWT
+# checking left on.
+#
+# That is not a relaxation. The scheduler calls these functions with an
+# x-sync-cron-secret header and no Authorization header at all, so platform JWT
+# checking would reject every scheduled run with a 401 before the function body
+# ran. The functions authorise themselves in server/integrations/requestAuth.ts,
+# which accepts either that shared secret or a real user session and refuses
+# everything else with one identical 401. Leaving it on would break the schedule
+# without making anything safer.
+
+project_id = "megfxrktnmhzhnnnsnub"
+
+[functions.sync-ga4]
+verify_jwt = false
+
+[functions.sync-search-console]
+verify_jwt = false
