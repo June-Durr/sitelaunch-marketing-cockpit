@@ -95,7 +95,27 @@ export function DataImport() {
       <PageHead
         kicker="Where the numbers come from"
         title="Data & Import"
-        lede="Everything in this app got here because somebody typed it in or imported it. Nothing is wired up to Instagram, Facebook or Google Analytics, so the app knows exactly what you have told it and nothing more."
+        lede={
+          mode === 'supabase' ? (
+            <>
+              Two things bring themselves in: Google Analytics and Search Console sync on a
+              daily schedule, and what they have actually done is under Automatic analytics
+              below. Everything else is still by hand. Typing a row in and importing a CSV
+              export stay as the fallbacks, for the days nothing was syncing and for
+              anything Google does not cover. Instagram, Facebook, LinkedIn, TikTok,
+              Calendar and enquiry forms straight into the Pipeline are not connected yet,
+              and Remaining integrations below reports each of those from stored state
+              rather than from a sentence like this one.
+            </>
+          ) : (
+            <>
+              Everything in this app got here because somebody typed it in or imported it.
+              Nothing syncs in browser-only mode, because automatic syncing needs a server
+              to hold the Google credentials, so the app knows exactly what you have told it
+              and nothing more.
+            </>
+          )
+        }
       />
 
       <Notice tone="violet">
@@ -155,11 +175,20 @@ export function DataImport() {
 
       <BackupPanel />
 
-      <Section title="Import GA4 traffic acquisition">
+      <GoogleSyncPanel />
+
+      <Section
+        title="Import a GA4 traffic export"
+        note={mode === 'supabase' ? 'fallback' : 'the only way in here'}
+      >
         <p className="page-lede" style={{ marginTop: 0 }}>
+          {mode === 'supabase'
+            ? 'The daily sync above covers Google Analytics from here on, so this is the fallback: use it for the stretch before syncing started, or for a report the sync does not ask for.'
+            : 'Nothing syncs in browser-only mode, so this is how a Google Analytics export gets in at all.'}{' '}
           Download a traffic report from Google Analytics as a CSV and drop it here. Empty
-          cells stay empty; the importer never fills a gap with a zero. The report covers
-          one date range, so tell the app which one before you import.
+          cells stay empty; the importer never fills a gap with a zero. The report covers one
+          date range, so tell the app which one before you import. Imported rows are kept
+          apart from anything synced, so nothing gets counted twice.
         </p>
         <div className="form-grid" style={{ maxWidth: '34rem' }}>
           <Field label="Range start">
@@ -186,8 +215,6 @@ export function DataImport() {
         </div>
         {importReport ? <p className="notice notice-violet">{importReport}</p> : null}
       </Section>
-
-      <GoogleSyncPanel />
 
       <IntegrationsPanel />
 

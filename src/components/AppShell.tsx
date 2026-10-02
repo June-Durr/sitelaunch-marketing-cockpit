@@ -17,7 +17,12 @@ export function AppShell() {
   const links: { to: string; label: string; count?: number }[] = [
     { to: '/', label: 'Today', count: dueTasks + dueLeads || undefined },
     { to: '/content', label: 'Content Log', count: data.contentItems.length || undefined },
-    { to: '/website', label: 'Website Outcomes', count: data.traffic.length || undefined },
+    // No count on Website Outcomes. The manual traffic_snapshots total used to sit
+    // here, which read as the whole of the website story when in fact the synced GA4
+    // and Search Console rows live in their own tables. Showing the honest number
+    // would mean a second analytics read in the shell, on every screen, so the badge
+    // is gone instead of wrong.
+    { to: '/website', label: 'Website Outcomes' },
     { to: '/pipeline', label: 'Pipeline', count: dueLeads || undefined },
     { to: '/tasks', label: 'Tasks', count: dueTasks || undefined },
     { to: '/activity', label: 'Activity', count: data.activityEvents.length || undefined },
@@ -59,13 +64,28 @@ export function AppShell() {
           </div>
         ) : null}
 
+        {/*
+          The storage line and the sync line both follow the adapter, so this text
+          cannot claim a sync that browser-only mode has no server to run. Nothing
+          here reads the sync tables: that would put an analytics request behind
+          every screen in the app just to word a caption.
+        */}
         <div className="sidebar-foot">
-          {mode === 'supabase'
-            ? 'Saved to Supabase.'
-            : 'Saved in this browser only. Export a backup before clearing site data.'}
-          <br />
-          Nothing is wired up to Instagram, Facebook or Google Analytics. Everything here
-          was typed in or imported.
+          {mode === 'supabase' ? (
+            <>
+              Saved to Supabase.
+              <br />
+              Google Analytics and Search Console sync themselves daily. Instagram,
+              Facebook, LinkedIn and TikTok numbers are still typed in by hand, because
+              those are not connected yet.
+            </>
+          ) : (
+            <>
+              Saved in this browser only. Export a backup before clearing site data.
+              <br />
+              Nothing syncs in this mode, so everything here was typed in or imported.
+            </>
+          )}
         </div>
       </nav>
 

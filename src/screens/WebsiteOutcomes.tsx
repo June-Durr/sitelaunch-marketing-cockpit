@@ -13,7 +13,7 @@ import { SyncedAnalytics } from './SyncedAnalytics';
 const blank = (v: string) => (v.trim() === '' ? null : v.trim());
 
 export function WebsiteOutcomes() {
-  const { data, remove } = useData();
+  const { data, mode, remove } = useData();
   const [editing, setEditing] = useState<{ row: TrafficSnapshot | null } | null>(null);
 
   const sessions = aggregate(data.traffic.map((t) => t.sessions));
@@ -26,7 +26,26 @@ export function WebsiteOutcomes() {
       <PageHead
         kicker="What the website saw"
         title="Website Outcomes"
-        lede="What happened on your website. Google Analytics and Search Console now sync themselves daily, and those days appear further down, labelled as synced. The table immediately below is the fallback: rows you typed in or imported from an export, for the days nothing was syncing. A row only gets linked to a post when you say so, because a matching tag is a hint and not proof."
+        lede={
+          mode === 'supabase' ? (
+            <>
+              What happened on your website. Google Analytics and Search Console sync
+              themselves daily, and the rows they bring in appear further down, labelled as
+              synced. The table immediately below is the fallback: rows you typed in or
+              imported from an export, for the stretch when nothing was syncing. The two are
+              counted separately on purpose, because a typed row covers a range and a synced
+              row covers one day, so adding them would count some days twice. A row only
+              gets linked to a post when you say so, because a matching tag is a hint and
+              not proof.
+            </>
+          ) : (
+            <>
+              What happened on your website. Nothing syncs in browser-only mode, so every row
+              below is one you typed in or imported from an export. A row only gets linked to
+              a post when you say so, because a matching tag is a hint and not proof.
+            </>
+          )
+        }
         action={
           <button className="btn btn-primary" onClick={() => setEditing({ row: null })}>
             Record outcome

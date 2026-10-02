@@ -1,9 +1,10 @@
 /**
  * Integration types, mirroring supabase/migrations/0005_integrations.sql.
  *
- * Nothing is connected. These describe the rows a server side sync will write and
- * the browser will read. No token ever appears here, because anything the browser
- * can read a user can read. See server/README.md.
+ * GA4 and Search Console are connected and syncing daily; the rest of the
+ * providers below are still to come. These describe the rows the server side sync
+ * writes and the browser reads. No token ever appears here, because anything the
+ * browser can read a user can read. See server/README.md.
  */
 
 export type IntegrationProvider =
@@ -116,7 +117,7 @@ export const STATUS_EXPLANATIONS: Record<IntegrationStatus, string> = {
  * Website numbers first, because they are the ones tied to enquiries, and enquiries
  * are the only thing in this app that counts as a business result. Social platforms
  * last, because their content level numbers are the least reliable and the least
- * connected to revenue.
+ * connected to revenue. The first two are done, which is why the list is split.
  */
 export const RECOMMENDED_ORDER: IntegrationProvider[] = [
   'ga4',
@@ -128,6 +129,19 @@ export const RECOMMENDED_ORDER: IntegrationProvider[] = [
   'linkedin',
   'tiktok',
 ];
+
+/**
+ * The two that sync themselves, and whose real state belongs to GoogleSyncPanel.
+ *
+ * Anything listing providers for the user to act on should leave these out rather
+ * than render a second, duller copy of a state that is already on screen.
+ */
+export const SYNCING_PROVIDERS: IntegrationProvider[] = ['ga4', 'search_console'];
+
+/** RECOMMENDED_ORDER minus the two that already sync. Still in the same order. */
+export const REMAINING_ORDER: IntegrationProvider[] = RECOMMENDED_ORDER.filter(
+  (p) => !SYNCING_PROVIDERS.includes(p),
+);
 
 export const PROVIDER_NOTES: Record<IntegrationProvider, string> = {
   ga4: 'Daily website visits by source, so a post can be tied to real traffic.',

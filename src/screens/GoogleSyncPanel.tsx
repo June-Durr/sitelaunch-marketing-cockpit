@@ -26,7 +26,15 @@ const PROVIDERS: { id: AnalyticsProvider; label: string; what: string }[] = [
   { id: 'search_console', label: 'Search Console', what: 'Daily clicks, impressions and position' },
 ];
 
-/** What the schedule in migration 0006 will do once it is switched on. */
+/**
+ * When the cron jobs run, as scheduled on the project.
+ *
+ * Both jobs are live, so this is a statement of what happens rather than of what
+ * would happen. The two are fifteen minutes apart so they do not contend for the
+ * same outbound connections. The times are written out here rather than read back
+ * from cron.job, which the browser has no business querying; Last successful and
+ * Last attempted in the table are the evidence that the schedule is really firing.
+ */
 const SCHEDULE = {
   ga4: '08:00 UTC daily',
   search_console: '08:15 UTC daily',
@@ -163,10 +171,7 @@ export function GoogleSyncPanel() {
                   <td data-label="Last attempted">
                     {lastAttempt ? formatDateTime(lastAttempt.started_at) : <span className="quiet">Never</span>}
                   </td>
-                  <td data-label="Next scheduled">
-                    {/* Honest until the cron job in migration 0006 is switched on. */}
-                    <span className="quiet">{SCHEDULE[id]}, once switched on</span>
-                  </td>
+                  <td data-label="Next scheduled">{SCHEDULE[id]}</td>
                   <td data-label="">
                     <button
                       className="btn"

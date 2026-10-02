@@ -5,6 +5,9 @@ import { formatDay } from '../lib/dates';
 import { aggregate } from '../lib/metrics';
 import type { AnalyticsStatus } from '../data/repository';
 
+/** How many rows of each source the tables render. The totals cover every row. */
+const ROW_WINDOW = 50;
+
 /**
  * The rows that arrived on their own, kept visibly apart from the ones typed in.
  *
@@ -56,8 +59,8 @@ export function SyncedAnalytics() {
   if (ga4.length === 0 && searchConsole.length === 0) {
     return (
       <Section title="Brought in automatically" note="nothing yet">
-        <Empty title="No synced days yet">
-          Once the Google sync has run, the days it brought in appear here, separately from
+        <Empty title="Nothing synced yet">
+          Once the Google sync has run, the rows it brought in appear here, separately from
           anything you typed in above.
         </Empty>
       </Section>
@@ -68,13 +71,23 @@ export function SyncedAnalytics() {
   const leads = aggregate(ga4.map((r) => r.generate_lead_events));
   const clicks = aggregate(searchConsole.map((r) => r.clicks));
 
-  // Newest first is how the sync stores them, and the most recent days are the
-  // ones worth looking at, so only a window is rendered.
-  const ga4Recent = ga4.slice(0, 50);
-  const searchRecent = searchConsole.slice(0, 50);
+  // Newest first is how the sync stores them, and the most recent rows are the ones
+  // worth looking at, so only a window is rendered. Whenever that window hides
+  // anything, the table says so underneath rather than trailing off in silence.
+  const ga4Recent = ga4.slice(0, ROW_WINDOW);
+  const searchRecent = searchConsole.slice(0, ROW_WINDOW);
+
+  // Rows, not days. One GA4 day arrives as a row per source, medium and campaign,
+  // and one Search Console day as a row per query and page, so this total runs well
+  // ahead of the number of days covered. Calling it days would overstate the range
+  // the sync has reached by a wide margin.
+  const totalRows = ga4.length + searchConsole.length;
 
   return (
-    <Section title="Brought in automatically" note={`${ga4.length + searchConsole.length} days`}>
+    <Section
+      title="Brought in automatically"
+      note={`${totalRows.toLocaleString()} synced ${totalRows === 1 ? 'row' : 'rows'}`}
+    >
       <Notice>
         These rows came from Google on their own. They are kept apart from the rows above,
         which you typed in or imported, because a typed row covers a range and one of these
@@ -92,6 +105,7 @@ export function SyncedAnalytics() {
           <div className="fieldset-legend">
             Google Analytics <Tag tone="violet">synced</Tag>
           </div>
+          <Truncation shown={ga4Recent.length} total={ga4.length} />
           <div className="table-wrap">
             <table className="data">
               <thead>
@@ -130,6 +144,7 @@ export function SyncedAnalytics() {
           <div className="fieldset-legend">
             Search Console <Tag tone="violet">synced</Tag>
           </div>
+          <Truncation shown={searchRecent.length} total={searchConsole.length} />
           <div className="table-wrap">
             <table className="data">
               <thead>
@@ -166,7 +181,14 @@ export function SyncedAnalytics() {
   );
 }
 
-/** A count that says how much of the data it is actually based on. */
+/**
+ * A count that says how much of the data it is actually based on.
+ *
+ * `n` counts rows carrying a real figure, and a row with nothing recorded is not
+ * one of them. That is what keeps a missing number from reading as a zero here:
+ * the total is a sum of what was observed, and the note says how many rows it came
+ * from, so a small `n` against a large `total` is visible rather than hidden.
+ */
 function Stat({
   label, value, n, total,
 }: {
@@ -176,7 +198,21 @@ function Stat({
     <div className="stat">
       <div className="stat-value">{value === null ? 'None yet' : value.toLocaleString()}</div>
       <div className="stat-label">{label}</div>
-      <div className="stat-note">{n} of {total} days have a figure</div>
+      <div className="stat-note">
+        {n.toLocaleString()} of {total.toLocaleString()} {total === 1 ? 'row has' : 'rows have'}{' '}
+        a figure
+      </div>
     </div>
+  );
+}
+
+/** Says plainly when a table is only showing the newest slice of what is stored. */
+function Truncation({ shown, total }: { shown: number; total: number }) {
+  if (shown >= total) return null;
+  return (
+    <p className="field-hint">
+      Showing the latest {shown.toLocaleString()} of {total.toLocaleString()} rows, newest
+      first. The totals above count all {total.toLocaleString()}.
+    </p>
   );
 }
