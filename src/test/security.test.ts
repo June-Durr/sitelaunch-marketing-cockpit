@@ -36,6 +36,18 @@ const OWNED_TABLES = [
   'integration_connections', 'sync_runs', 'ga4_daily_traffic', 'search_console_daily',
 ];
 
+/**
+ * Everything under server/, which must never be reachable from the browser.
+ *
+ * Read here so the tests below can assert what is in it as well as what is not in
+ * src. The lead mirror is the first integration that asks Google for a write
+ * scope, so the boundary matters more than it did.
+ */
+const serverSource = readdirSync('server', { recursive: true, encoding: 'utf8' })
+  .filter((f) => typeof f === 'string' && /\.ts$/.test(f) && !/\.test\.ts$/.test(f))
+  .map((f) => readFileSync(`server/${f}`, 'utf8'))
+  .join('\n');
+
 describe('every owned table has row level security on', () => {
   for (const table of OWNED_TABLES) {
     it(`${table} enables RLS`, () => {
@@ -305,5 +317,312 @@ describe('seed data is not a migration', () => {
     const seed = readFileSync('supabase/seed.sql', 'utf8');
     expect(seed).toContain('THIS IS NOT A MIGRATION');
     expect(seed).toMatch(/auth\.users/);
+  });
+});
+
+/* ------------------------------------------------------------------------ */
+
+describe('the Google Sheet mirror keeps every credential server side', () => {
+  const shippedFiles = readdirSync('src', { recursive: true, encoding: 'utf8' }).filter(
+    (f) => typeof f === 'string' && /\.tsx?$/.test(f) && !/\.test\.tsx?$/.test(f),
+  ) as string[];
+
+  it('never names the spreadsheet id variable anywhere in src', () => {
+    // It is an Edge Function secret. The browser does not know which spreadsheet
+    // it is, which is why the panel shows the sheet's title read back from the
+    // connection row rather than its id.
+    expect(shippedSource).not.toContain('GOOGLE_SHEETS_SPREADSHEET_ID');
+    expect(shippedSource).not.toContain('VITE_GOOGLE_SHEETS');
+    expect(shippedSource).not.toContain('GOOGLE_SERVICE_ACCOUNT_KEY');
+  });
+
+  it('never names the real spreadsheet id in src either', () => {
+    // Not a secret in the sense a key is, but it is configuration and it belongs
+    // in one place. A literal in the bundle is a literal nobody can rotate.
+    expect(shippedSource).not.toContain('1umabdzkbi2VI5w0');
+  });
+
+  it('calls no Google API from the browser', () => {
+    for (const host of [
+      'sheets.googleapis.com', 'googleapis.com', 'oauth2.googleapis.com',
+      'www.googleapis.com/auth/spreadsheets',
+    ]) {
+      expect(shippedSource, `src reaches ${host}`).not.toContain(host);
+    }
+  });
+
+  it('keeps the Sheets scope and the Sheets client on the server', () => {
+    // Where they are supposed to be, asserted positively, so a later refactor
+    // that moved them into src would fail here rather than silently succeed.
+    expect(serverSource).toContain('https://www.googleapis.com/auth/spreadsheets');
+    expect(serverSource).toContain('sheets.googleapis.com');
+  });
+
+  it('never imports the Sheets client or the mirror logic into src', () => {
+    for (const file of shippedFiles) {
+      const text = readFileSync(`src/${file}`, 'utf8');
+      for (const forbidden of [
+        'integrations/sheets', 'leadMirrorShared', 'leadMirrorExport',
+        'integrations/leadMirror', 'googleAuth',
+      ]) {
+        expect(text, `src/${file} imports ${forbidden}`).not.toContain(forbidden);
+      }
+    }
+  });
+
+  it('asks the server to do the work rather than doing it', () => {
+    const repo = readFileSync('src/data/supabaseRepository.ts', 'utf8');
+    // The only thing the browser sends is its own session, to one function name.
+    expect(repo).toContain('sync-lead-mirror');
+    expect(repo).toContain('authorization');
+    expect(repo).not.toContain('private_key');
+  });
+});
+
+describe('the Google Sheet mirror schema stores nothing secret', () => {
+  const sql = sqlFor('0007_lead_mirror.sql');
+
+  /**
+   * The same SQL with its prose removed.
+   *
+   * The migration explains at length that it holds no credential and no
+   * spreadsheet id, so searching the whole file for those words finds the
+   * explanation rather than a column. What matters is the executable part.
+   */
+  const statements = sql
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/--.*/g, ' ')
+    .toLowerCase();
+
+  it('adds no column that could hold a credential or a spreadsheet id', () => {
+    for (const forbidden of [
+      'token', 'secret', 'private_key', 'credential', 'spreadsheet_id',
+      'service_account', 'password', 'api_key',
+    ]) {
+      expect(statements, `0007 declares something called ${forbidden}`)
+        .not.toContain(forbidden);
+    }
+  });
+
+  it('really did strip only the prose, and still has the schema in it', () => {
+    // So the assertion above cannot pass by having removed everything.
+    expect(statements).toContain('create unique index leads_unique_external_key');
+    expect(statements).toContain('alter table leads');
+    expect(statements).toContain('follow_up_mode');
+  });
+
+  it('runs the follow-up derivation as the caller, not as its definer', () => {
+    // A security definer function here would hand every caller every owner's
+    // pipeline, because the sync tables are written with the service role.
+    const at = sql.indexOf('create or replace function lead_follow_up_state');
+    expect(at).toBeGreaterThan(-1);
+    const body = sql.slice(at, sql.indexOf('$$;', at));
+    expect(body).not.toContain('security definer');
+    expect(sql).toContain('revoke all on function lead_follow_up_state(date) from anon');
+    expect(sql).toContain('grant execute on function lead_follow_up_state(date) to authenticated');
+  });
+
+  it('runs the convenience view as the caller too', () => {
+    expect(sql).toContain('alter view lead_follow_up_today set (security_invoker = true)');
+    expect(sql).toContain('revoke all on lead_follow_up_today from anon');
+    expect(sql).toContain('grant select on lead_follow_up_today to authenticated');
+  });
+
+  it('makes a duplicate impossible rather than merely unlikely', () => {
+    for (const [index, columns] of [
+      ['leads_unique_external_key', '(owner_id, external_source, external_key)'],
+      ['activity_events_unique_external_key', '(owner_id, external_source, external_id)'],
+      ['tasks_one_open_follow_up_per_lead', '(owner_id, lead_id)'],
+    ] as [string, string][]) {
+      const at = sql.indexOf(`create unique index ${index}`);
+      expect(at, `${index} is missing`).toBeGreaterThan(-1);
+      const block = sql.slice(at, at + 400);
+      expect(block, index).toContain(columns);
+      // Partial, so the index covers only the rows it is meant to.
+      expect(block, index).toContain('where');
+    }
+  });
+
+  it('keeps the one-open-follow-up index to open follow-ups', () => {
+    const at = sql.indexOf('create unique index tasks_one_open_follow_up_per_lead');
+    const block = sql.slice(at, at + 400);
+    expect(block).toContain("task_type = 'follow_up'");
+    expect(block).toContain("status = 'open'");
+    expect(block).toContain('lead_id is not null');
+  });
+});
+
+describe('the two copies of the follow-up rule say the same thing', () => {
+  /**
+   * The rule is implemented twice on purpose: in src/config/followUp.ts for the
+   * screens, and in SQL for the Sheet export and anything server side. These
+   * check the labels and the configuration match. src/test/pg/followUp.test.ts
+   * checks the behaviour matches, case by case, against a real Postgres.
+   */
+  const sql = sqlFor('0007_lead_mirror.sql');
+  const config = readFileSync('src/config/followUp.ts', 'utf8');
+  const exporter = readFileSync('server/integrations/leadMirrorExport.ts', 'utf8');
+
+  it('uses the same due-soon threshold in the SQL as in the module', () => {
+    const match = /export const DUE_SOON_DAYS = (\d+);/.exec(config);
+    expect(match, 'DUE_SOON_DAYS is not declared as a literal').toBeTruthy();
+    const days = match?.[1] as string;
+    expect(sql).toContain(`l.next_action_date <= as_of + ${days}`);
+  });
+
+  it('excludes the same activity types from a touch in both places', () => {
+    const match = /NON_TOUCH_ACTIVITY: ActivityType\[\] = \[([\s\S]*?)\];/.exec(config);
+    expect(match, 'NON_TOUCH_ACTIVITY is not a literal list').toBeTruthy();
+    const types = [...(match?.[1] ?? '').matchAll(/'([a-z_]+)'/g)].map((m) => m[1]);
+    expect(types.length).toBeGreaterThan(0);
+
+    for (const type of types) {
+      expect(sql, `the SQL does not exclude ${type}`).toContain(`'${type}'`);
+      expect(exporter, `the exporter does not exclude ${type}`).toContain(`'${type}'`);
+    }
+  });
+
+  it('spells every status the same way in the sheet, both sides', () => {
+    const forConfig = /FOLLOW_UP_STATUS_SHEET_LABELS: Record<FollowUpStatus, string> = \{([\s\S]*?)\};/.exec(config);
+    const forServer = /FOLLOW_UP_STATUS_SHEET_LABELS: Record<string, string> = \{([\s\S]*?)\};/.exec(exporter);
+    expect(forConfig, 'config labels').toBeTruthy();
+    expect(forServer, 'server labels').toBeTruthy();
+
+    const pairs = (text: string) =>
+      Object.fromEntries(
+        [...text.matchAll(/(\w+): '([^']+)'/g)].map((m) => [m[1], m[2]]),
+      );
+    const fromConfig = pairs(forConfig?.[1] ?? '');
+    // Not empty, so the comparison cannot pass by both sides finding nothing.
+    expect(Object.keys(fromConfig)).toHaveLength(8);
+    expect(pairs(forServer?.[1] ?? '')).toEqual(fromConfig);
+  });
+
+  it('spells every stage the same way in the sheet as on screen', () => {
+    const domain = readFileSync('src/types/domain.ts', 'utf8');
+    const forDomain = /STAGE_LABELS: Record<LeadStage, string> = \{([\s\S]*?)\};/.exec(domain);
+    const forServer = /STAGE_SHEET_LABELS: Record<LeadStage, string> = \{([\s\S]*?)\};/.exec(exporter);
+    expect(forDomain, 'domain labels').toBeTruthy();
+    expect(forServer, 'server labels').toBeTruthy();
+
+    const pairs = (text: string) =>
+      Object.fromEntries(
+        [...text.matchAll(/(\w+): '([^']+)'/g)].map((m) => [m[1], m[2]]),
+      );
+    const fromDomain = pairs(forDomain?.[1] ?? '');
+    expect(Object.keys(fromDomain)).toHaveLength(8);
+    expect(pairs(forServer?.[1] ?? '')).toEqual(fromDomain);
+  });
+
+  it('lists the same pipeline stages on both sides of the boundary', () => {
+    // server/integrations/types.ts repeats LeadStage rather than importing it,
+    // because the boundary only holds if it holds in both directions.
+    const domain = readFileSync('src/types/domain.ts', 'utf8');
+    const server = readFileSync('server/integrations/types.ts', 'utf8');
+
+    const stages = (text: string) => {
+      const match = /export type LeadStage =([\s\S]*?);/.exec(text);
+      return [...(match?.[1] ?? '').matchAll(/'([a-z_]+)'/g)].map((m) => m[1]).sort();
+    };
+    expect(stages(server)).toEqual(stages(domain));
+    expect(stages(server).length).toBe(8);
+  });
+
+  it('lists the same integration providers on both sides', () => {
+    const browser = readFileSync('src/types/integrations.ts', 'utf8');
+    const server = readFileSync('server/integrations/types.ts', 'utf8');
+
+    const providers = (text: string) => {
+      const match = /export type IntegrationProvider =([\s\S]*?);/.exec(text);
+      return [...(match?.[1] ?? '').matchAll(/'([a-z0-9_]+)'/g)].map((m) => m[1]).sort();
+    };
+    expect(providers(server)).toEqual(providers(browser));
+    expect(providers(server)).toContain('google_sheets');
+  });
+});
+
+/* ------------------------------------------------------------------------ */
+
+describe('the built bundle carries no Google credential', () => {
+  /**
+   * The real check, against the real output.
+   *
+   * Everything above reads source. This reads dist/, which is what actually ships
+   * to a browser, because a secret can reach a bundle through a dependency or a
+   * define, not only through an import somebody wrote. npm run build has to have
+   * run; the test says so plainly rather than passing quietly when it has not.
+   */
+  const builtFiles = existsSync('dist')
+    ? (readdirSync('dist', { recursive: true, encoding: 'utf8' }) as string[])
+        .filter((f) => typeof f === 'string' && /\.(js|css|html|map)$/.test(f))
+    : [];
+
+  it('has a build to look at', () => {
+    expect(
+      builtFiles.length,
+      'dist/ has no built assets. Run npm run build before this suite so the bundle check means something.',
+    ).toBeGreaterThan(0);
+  });
+
+  it('contains no private key, in any of its usual spellings', () => {
+    const forbidden = [
+      '-----BEGIN PRIVATE KEY-----',
+      '-----BEGIN RSA PRIVATE KEY-----',
+      'BEGIN PRIVATE KEY',
+      'private_key',
+      'private_key_id',
+      'gserviceaccount.com',
+      'client_email',
+      'GOOGLE_SERVICE_ACCOUNT_KEY',
+    ];
+
+    for (const file of builtFiles) {
+      const text = readFileSync(`dist/${file}`, 'utf8');
+      for (const needle of forbidden) {
+        expect(text.includes(needle), `dist/${file} contains "${needle}"`).toBe(false);
+      }
+    }
+  });
+
+  it('contains no service role key, cron secret or spreadsheet id', () => {
+    const forbidden = [
+      'SUPABASE_SERVICE_ROLE_KEY',
+      'service_role',
+      'SYNC_CRON_SECRET',
+      'x-sync-cron-secret',
+      'GOOGLE_SHEETS_SPREADSHEET_ID',
+      '1umabdzkbi2VI5w0',
+      'GA4_PROPERTY_ID',
+    ];
+
+    for (const file of builtFiles) {
+      const text = readFileSync(`dist/${file}`, 'utf8');
+      for (const needle of forbidden) {
+        expect(text.includes(needle), `dist/${file} contains "${needle}"`).toBe(false);
+      }
+    }
+  });
+
+  it('calls no Google endpoint from the bundle', () => {
+    for (const file of builtFiles) {
+      const text = readFileSync(`dist/${file}`, 'utf8');
+      expect(
+        text.includes('sheets.googleapis.com'),
+        `dist/${file} calls the Sheets API`,
+      ).toBe(false);
+      expect(
+        text.includes('oauth2.googleapis.com'),
+        `dist/${file} mints Google tokens`,
+      ).toBe(false);
+    }
+  });
+
+  it('does carry the two public Supabase values, which are meant to be there', () => {
+    // The counterpart to every assertion above: this proves the search is
+    // actually looking at the shipped JavaScript and would find a string in it.
+    const js = builtFiles.filter((f) => f.endsWith('.js'));
+    expect(js.length).toBeGreaterThan(0);
+    const all = js.map((f) => readFileSync(`dist/${f}`, 'utf8')).join('\n');
+    expect(all).toContain('supabase');
   });
 });

@@ -1,7 +1,7 @@
 # Supabase CLI project configuration.
 #
 # This file exists for one reason that matters: it records verify_jwt = false for
-# both sync functions, so a deploy cannot accidentally be made with platform JWT
+# every sync function, so a deploy cannot accidentally be made with platform JWT
 # checking left on.
 #
 # That is not a relaxation. The scheduler calls these functions with an
@@ -18,4 +18,10 @@ project_id = "megfxrktnmhzhnnnsnub"
 verify_jwt = false
 
 [functions.sync-search-console]
+verify_jwt = false
+
+# The lead mirror, for the same reason. It is called by a person pressing a button
+# with their own session, and on a schedule with the shared secret and no
+# Authorization header at all, and resolveCaller is what tells those apart.
+[functions.sync-lead-mirror]
 verify_jwt = false

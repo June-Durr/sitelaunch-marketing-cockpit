@@ -3,6 +3,7 @@ import { useData } from '../data/context';
 import { Drawer } from '../components/Drawer';
 import { Empty, Field, Notice, PageHead, Tag } from '../components/primitives';
 import { blankCalendarSync } from '../data/factories';
+import { recordContactIfRelevant } from '../data/leadFollowUp';
 import { activityInRange, sortActivity } from '../lib/activity';
 import { formatDateTime, fromLocalInput, toLocalInput } from '../lib/dates';
 import type { ActivityEvent, ActivityType } from '../types/domain';
@@ -165,12 +166,14 @@ function ActivityForm({
     activity_type: (event?.activity_type ?? 'other') as ActivityType,
     title: event?.title ?? '',
     details: event?.details ?? '',
+    channel: event?.channel ?? '',
     content_item_id: event?.content_item_id ?? '',
     lead_id: event?.lead_id ?? '',
     task_id: event?.task_id ?? '',
   });
   const [saving, setSaving] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
+  const [followUpNote, setFollowUpNote] = useState<string | null>(null);
 
   const set = <K extends keyof typeof form>(k: K, v: (typeof form)[K]) =>
     setForm((f) => ({ ...f, [k]: v }));
@@ -194,6 +197,10 @@ function ActivityForm({
       // finishing a task stays labelled that way even after you reword it.
       source: event?.source ?? ('manual' as const),
       external_id: event?.external_id ?? null,
+      /* Set only by whatever imported the record, so editing leaves it alone. */
+      external_source: event?.external_source ?? null,
+      channel: blank(form.channel),
+      evidence_source: event?.evidence_source ?? null,
       content_item_id: blank(form.content_item_id),
       lead_id: blank(form.lead_id),
       task_id: blank(form.task_id),
@@ -206,8 +213,24 @@ function ActivityForm({
     };
 
     try {
-      if (event) await update('activity_events', event.id, payload);
-      else await insert('activity_events', payload);
+      if (event) {
+        await update('activity_events', event.id, payload);
+      } else {
+        await insert('activity_events', payload);
+        /**
+         * Logging contact with somebody moves their follow-up on.
+         *
+         * Only on a new record. Rewording an old one does not mean it happened
+         * again, and re-running the rule from an edit would drag a date forward
+         * for no reason.
+         */
+        const outcome = await recordContactIfRelevant({ insert, update }, data, {
+          leadId: payload.lead_id,
+          activityType: payload.activity_type,
+          occurredAt: payload.occurred_at,
+        });
+        if (outcome && outcome.taskChanged) setFollowUpNote(outcome.plan.reason);
+      }
       onClose();
     } catch (err) {
       setProblem(err instanceof Error ? err.message : String(err));
@@ -296,8 +319,25 @@ function ActivityForm({
             ))}
           </select>
         </Field>
+        <Field label="How" span hint="Email, phone, WhatsApp, in person. Part of what makes one touch a different touch from another.">
+          <input
+            type="text"
+            value={form.channel}
+            onChange={(e) => set('channel', e.target.value)}
+          />
+        </Field>
       </div>
 
+      {form.lead_id && !event ? (
+        <Notice tone="violet">
+          Linking this to a person counts as being in touch with them. Saving it moves
+          their follow-up on by the rhythm for their stage, and reuses the follow-up
+          already open rather than adding a second one. A person set to on hold, archived
+          or no follow-up is left exactly as they are.
+        </Notice>
+      ) : null}
+
+      {followUpNote ? <p className="notice notice-violet">{followUpNote}</p> : null}
       {problem ? <p className="notice notice-crimson">{problem}</p> : null}
 
       <div className="form-actions">

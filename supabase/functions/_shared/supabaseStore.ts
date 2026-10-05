@@ -16,6 +16,7 @@ import { createClient, type SupabaseClient } from 'jsr:@supabase/supabase-js@2';
 
 import type { Ga4DailyRow, SearchConsoleDailyRow } from '../../../server/integrations/analytics.ts';
 import type { SyncRunRecord, SyncStore } from '../../../server/integrations/syncRunner.ts';
+import type { IntegrationProvider } from '../../../server/integrations/types.ts';
 
 /** Kept well under any statement size limit, and small enough to retry cheaply. */
 const CHUNK = 500;
@@ -124,6 +125,9 @@ export class SupabaseSyncStore implements SyncStore {
         rows_written: run.rowsWritten,
         error_summary: run.errorSummary,
         idempotency_key: run.idempotencyKey,
+        // Providers that have more to say than two counts put it here. Already
+        // sanitized by the caller, because the owner can read this column.
+        ...(run.details === undefined ? {} : { details: run.details }),
       }, { onConflict: 'owner_id,idempotency_key', ignoreDuplicates: false });
 
     if (error) throw new Error(`sync_runs upsert failed: ${error.message}`);
@@ -140,7 +144,7 @@ export class SupabaseSyncStore implements SyncStore {
 export async function ensureConnection(
   client: SupabaseClient,
   ownerId: string,
-  provider: 'ga4' | 'search_console',
+  provider: IntegrationProvider,
   providerAccountId: string,
   displayName: string,
   grantedScopes: string[],
@@ -169,7 +173,7 @@ export async function ensureConnection(
 export async function markConnectionError(
   client: SupabaseClient,
   ownerId: string,
-  provider: 'ga4' | 'search_console',
+  provider: IntegrationProvider,
   message: string,
 ): Promise<void> {
   await client
@@ -183,7 +187,7 @@ export async function markConnectionError(
 export async function markConnectionSynced(
   client: SupabaseClient,
   ownerId: string,
-  provider: 'ga4' | 'search_console',
+  provider: IntegrationProvider,
 ): Promise<void> {
   await client
     .from('integration_connections')

@@ -4,8 +4,11 @@ import { Drawer } from '../components/Drawer';
 import { Field, Notice } from '../components/primitives';
 import { metricToInput, parseMetricInput } from '../lib/format';
 import { today } from '../lib/dates';
-import type { Lead, LeadStage } from '../types/domain';
+import type { FollowUpMode, Lead, LeadStage } from '../types/domain';
 import { STAGE_LABELS, STAGE_ORDER } from '../types/domain';
+import { FOLLOW_UP_MODE_LABELS } from '../config/followUp';
+
+const FOLLOW_UP_MODES = Object.keys(FOLLOW_UP_MODE_LABELS) as FollowUpMode[];
 
 const blank = (v: string) => (v.trim() === '' ? null : v.trim());
 
@@ -22,6 +25,10 @@ export function LeadForm({ lead, onClose }: { lead: Lead | null; onClose: () => 
     related_campaign: lead?.related_campaign ?? '',
     content_item_id: lead?.content_item_id ?? '',
     stage: (lead?.stage ?? 'new_contact') as LeadStage,
+    follow_up_mode: (lead?.follow_up_mode ?? 'auto') as FollowUpMode,
+    relationship: lead?.relationship ?? '',
+    current_status: lead?.current_status ?? '',
+    preferred_channel: lead?.preferred_channel ?? '',
     next_action: lead?.next_action ?? '',
     next_action_date: lead?.next_action_date ?? '',
     proposed_value: metricToInput(lead?.proposed_value ?? null),
@@ -56,6 +63,10 @@ export function LeadForm({ lead, onClose }: { lead: Lead | null; onClose: () => 
       source: blank(form.source),
       related_campaign: blank(form.related_campaign),
       stage: form.stage,
+      follow_up_mode: form.follow_up_mode,
+      relationship: blank(form.relationship),
+      current_status: blank(form.current_status),
+      preferred_channel: blank(form.preferred_channel),
       next_action: blank(form.next_action),
       next_action_date: blank(form.next_action_date),
       proposed_value: parseMetricInput(form.proposed_value),
@@ -64,6 +75,13 @@ export function LeadForm({ lead, onClose }: { lead: Lead | null; onClose: () => 
       notes: blank(form.notes),
       first_contact_at: blank(form.first_contact_at),
       closed_at: isClosed ? (lead?.closed_at ?? today()) : null,
+      /* Carried through untouched. The mirror owns the key, and a date the mirror
+       * reported is evidence somebody else recorded: neither is this form's to
+       * change, and dropping them would orphan a lead from its own history. */
+      external_source: lead?.external_source ?? null,
+      external_key: lead?.external_key ?? null,
+      record_confidence: lead?.record_confidence ?? null,
+      reported_last_touch_at: lead?.reported_last_touch_at ?? null,
       is_seed: lead?.is_seed ?? false,
     };
 
@@ -119,6 +137,35 @@ export function LeadForm({ lead, onClose }: { lead: Lead | null; onClose: () => 
             onChange={(e) => set('first_contact_at', e.target.value)}
           />
         </Field>
+        <Field
+          label="Relationship"
+          hint="In your own words. Prospect, existing client, referral partner, somebody you met once."
+        >
+          <input
+            type="text"
+            value={form.relationship}
+            onChange={(e) => set('relationship', e.target.value)}
+          />
+        </Field>
+        <Field label="Best way to reach them" hint="Email, phone, WhatsApp, LinkedIn.">
+          <input
+            type="text"
+            value={form.preferred_channel}
+            onChange={(e) => set('preferred_channel', e.target.value)}
+          />
+        </Field>
+        <Field
+          label="Where things stand"
+          span
+          hint="One line on what is actually happening right now, so you do not have to reread the notes."
+        >
+          <input
+            type="text"
+            value={form.current_status}
+            onChange={(e) => set('current_status', e.target.value)}
+            placeholder="Waiting on their logo files"
+          />
+        </Field>
       </div>
 
       <div className="fieldset-legend">Where it came from</div>
@@ -162,7 +209,32 @@ export function LeadForm({ lead, onClose }: { lead: Lead | null; onClose: () => 
       </div>
 
       <div className="fieldset-legend">Next action and value</div>
+      <Notice>
+        Normally you do not set the follow-up date by hand. Logging a contact on the
+        Activity screen moves it forward on its own, by the rhythm for this stage, and
+        reuses the one open follow-up rather than adding another. Set the follow-up below
+        to <strong>{FOLLOW_UP_MODE_LABELS.none.toLowerCase()}</strong>,{' '}
+        <strong>{FOLLOW_UP_MODE_LABELS.hold.toLowerCase()}</strong> or{' '}
+        <strong>{FOLLOW_UP_MODE_LABELS.archived.toLowerCase()}</strong> and the app stops
+        chasing, and stops putting them on the Today screen, without forgetting them.
+      </Notice>
       <div className="form-grid">
+        <Field
+          label="Follow-up"
+          span
+          hint="A deliberate decision. Nothing the app works out from dates can override it."
+        >
+          <select
+            value={form.follow_up_mode}
+            onChange={(e) => set('follow_up_mode', e.target.value as FollowUpMode)}
+          >
+            {FOLLOW_UP_MODES.map((mode) => (
+              <option key={mode} value={mode}>
+                {FOLLOW_UP_MODE_LABELS[mode]}
+              </option>
+            ))}
+          </select>
+        </Field>
         <Field label="Next action">
           <input
             type="text"

@@ -5,13 +5,27 @@
  */
 
 export type IntegrationProvider =
-  | 'ga4' | 'search_console' | 'google_calendar' | 'instagram'
+  | 'ga4' | 'search_console' | 'google_sheets' | 'google_calendar' | 'instagram'
   | 'facebook' | 'linkedin' | 'tiktok' | 'website_forms';
 
 export type IntegrationStatus =
   | 'not_configured' | 'ready' | 'connected' | 'syncing' | 'error';
 
 export type SyncStatus = 'running' | 'succeeded' | 'failed' | 'skipped';
+
+/**
+ * Pipeline stages, mirroring the lead_stage enum in migration 0001.
+ *
+ * Repeated here rather than imported from src/types/domain.ts because the browser
+ * must never import across this boundary, and the boundary only holds if it holds
+ * in both directions. src/test/security.test.ts asserts the two lists agree.
+ */
+export type LeadStage =
+  | 'new_contact' | 'follow_up' | 'qualified' | 'call_scheduled'
+  | 'proposal' | 'waiting' | 'won' | 'lost';
+
+/** Why a lead has, or has not, a follow-up date. Mirrors follow_up_mode in 0007. */
+export type FollowUpMode = 'auto' | 'none' | 'hold' | 'archived';
 
 /** A closed date range, both ends included. */
 export interface DateWindow {

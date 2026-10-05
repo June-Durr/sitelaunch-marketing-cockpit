@@ -97,6 +97,59 @@ export interface SyncTriggerOutcome {
   error: string | null;
 }
 
+/* ------------------------------------------------------- the lead mirror --- */
+
+/** What can be asked of the lead mirror function. */
+export type LeadMirrorAction = 'reconcile' | 'export';
+
+/** A reconciliation either reports or applies. There is no third option. */
+export type ReconcileMode = 'dry_run' | 'live';
+
+/** One spreadsheet row the import will not touch, and why, in words. */
+export interface MirrorRowProblem {
+  tab: string;
+  rowNumber: number;
+  label: string;
+  reason: string;
+}
+
+export interface MirrorAmbiguity extends MirrorRowProblem {
+  /** Ids of the leads a row could have meant, so it can be resolved by hand. */
+  candidateIds: string[];
+}
+
+/**
+ * What the mirror function reported. Never carries a credential.
+ *
+ * Every field is optional-shaped, because this is parsed from a server response
+ * and a Cockpit that assumes a shape it did not get is a Cockpit that shows a
+ * blank screen instead of an error.
+ */
+export interface LeadMirrorOutcome {
+  ok: boolean;
+  /** 'dry_run', 'applied', 'blocked', 'succeeded', 'failed' or a transport word. */
+  status: string;
+  counts: Record<string, number> | null;
+  ambiguous: MirrorAmbiguity[];
+  rejected: MirrorRowProblem[];
+  warnings: string[];
+  /** Why a live reconciliation refused to write. Empty when it did not. */
+  gateReasons: string[];
+  applied: { leadsCreated: number; leadsUpdated: number; touchesCreated: number } | null;
+  /** Rows written to each tab by an export. */
+  leadRows: number | null;
+  touchRows: number | null;
+  /** Already sanitized server side. Safe to display. */
+  error: string | null;
+}
+
+/** Connection and run history for the mirror alone. */
+export interface LeadMirrorStatus {
+  connection: IntegrationConnection | null;
+  /** Most recent first. */
+  runs: SyncRun[];
+}
+
 /**
  * The single data boundary of the application.
  *
@@ -146,6 +199,26 @@ export interface Repository {
    * owner_id is left off every row so the database stamps it with auth.uid().
    */
   importDataset?(data: Dataset): Promise<ImportReport>;
+  /**
+   * Supabase adapter only: the Google Sheet mirror's own connection and runs.
+   *
+   * Kept separate from loadAnalytics rather than folded into it, because that call
+   * drags thousands of rows of daily traffic along with it and this panel needs
+   * none of them.
+   */
+  loadLeadMirror?(): Promise<LeadMirrorStatus>;
+  /**
+   * Supabase adapter only: ask the server to reconcile or to rewrite the mirror.
+   *
+   * The browser holds no Google credential and does not know the spreadsheet id,
+   * so this is a request for work rather than the work itself. A live
+   * reconciliation must state what it expects to find, and the server refuses to
+   * write if the sheet does not match.
+   */
+  triggerLeadMirror?(
+    action: LeadMirrorAction,
+    options?: { mode?: ReconcileMode; expect?: { leadRows: number; touchRows: number } },
+  ): Promise<LeadMirrorOutcome>;
 }
 
 /** A fresh empty dataset. Use this rather than writing the shape out by hand. */

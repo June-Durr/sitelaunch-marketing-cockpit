@@ -9,12 +9,21 @@
 import type { Dataset, Task } from '../types/domain';
 import type { DataContextValue } from './context';
 import { activityFromTask, existingTaskActivity } from '../lib/activity';
+import { recordContactIfRelevant, type FollowUpOutcome } from './leadFollowUp';
 
 export interface CompletionResult {
   /** True when this call wrote a new activity record. */
   activityCreated: boolean;
   /** True when one already existed, so nothing was written a second time. */
   alreadyLogged: boolean;
+  /**
+   * What the follow-up rule did about the lead, when the task named one.
+   *
+   * Null when the task was not about a person, or when finishing it does not
+   * count as contact. Carries the reason either way, so a screen can say what
+   * happened rather than silently moving a date.
+   */
+  followUp: FollowUpOutcome | null;
 }
 
 /**
@@ -34,11 +43,26 @@ export async function completeTask(
   await ctx.update('tasks', task.id, { status: 'done', completed_at: now });
 
   if (existingTaskActivity(data.activityEvents, task.id)) {
-    return { activityCreated: false, alreadyLogged: true };
+    return { activityCreated: false, alreadyLogged: true, followUp: null };
   }
 
-  await ctx.insert('activity_events', activityFromTask(task, now));
-  return { activityCreated: true, alreadyLogged: false };
+  const activity = activityFromTask(task, now);
+  await ctx.insert('activity_events', activity);
+
+  /**
+   * Finishing a follow-up is contact, so the next one moves.
+   *
+   * This is what stops a chased lead sitting on the Today screen forever: the
+   * task that was open is reused rather than a second one being created, and the
+   * lead's own follow-up date moves with it.
+   */
+  const followUp = await recordContactIfRelevant(ctx, data, {
+    leadId: task.lead_id,
+    activityType: activity.activity_type,
+    occurredAt: now,
+  });
+
+  return { activityCreated: true, alreadyLogged: false, followUp };
 }
 
 /** Skip a task. Nothing happened, so nothing is logged. */

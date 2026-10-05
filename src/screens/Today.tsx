@@ -18,6 +18,9 @@ import {
   relativeDue, toDayString, today,
 } from '../lib/dates';
 import { isInProgram, programPosition } from '../config/program';
+import {
+  FOLLOW_UP_STATUS_LABELS, FOLLOW_UP_STATUS_TONES, needsActionToday,
+} from '../config/followUp';
 import { readSettings } from '../data/settings';
 import { formatCurrency } from '../lib/format';
 import { aggregate } from '../lib/metrics';
@@ -47,14 +50,16 @@ export function Today() {
 
   const measurementDue = findMeasurementGaps(data, now);
 
-  const leadsNeedingAction = data.leads
-    .filter(
-      (l) =>
-        !['won', 'lost'].includes(l.stage) &&
-        l.next_action_date !== null &&
-        l.next_action_date <= now,
-    )
-    .sort((a, b) => (a.next_action_date ?? '').localeCompare(b.next_action_date ?? ''));
+  /**
+   * Who is waiting on you today, decided in one place.
+   *
+   * src/config/followUp.ts owns this. It is not a date comparison inlined here,
+   * because the answer depends on more than the date: a lead deliberately on
+   * hold, archived or set to no follow-up is not waiting on anybody, and a date
+   * left behind on one of those is not a reason to nag. Overdue comes first,
+   * then today, and within each the person who has waited longest.
+   */
+  const leadsNeedingAction = needsActionToday(data.leads, data.activityEvents, now);
 
   /* -------------------------------------------------- program progress --- */
 
@@ -267,10 +272,14 @@ export function Today() {
 
       <Section title="Leads requiring action" note={`${leadsNeedingAction.length}`}>
         {leadsNeedingAction.length === 0 ? (
-          <p className="field-hint">Nobody is past their follow-up date.</p>
+          <p className="field-hint">
+            Nobody is past their follow-up date. People deliberately on hold, archived or
+            set to no follow-up are not counted here, which is the point of setting them
+            that way.
+          </p>
         ) : (
           <ul className="queue">
-            {leadsNeedingAction.map((lead) => (
+            {leadsNeedingAction.map(({ lead, daysSince, status }) => (
               <li key={lead.id}>
                 <div className="queue-main">
                   <div className="queue-title">{lead.prospect_name}</div>
@@ -280,9 +289,18 @@ export function Today() {
                       ? ` · ${formatCurrency(lead.proposed_value)} proposed`
                       : ''}
                   </div>
+                  <div className="queue-meta">
+                    {/* The number that actually matters: how long they have waited. */}
+                    {daysSince === null
+                      ? 'No contact on record'
+                      : `${daysSince} ${daysSince === 1 ? 'day' : 'days'} since the last touch`}
+                  </div>
                 </div>
                 <div className="queue-side">
-                  <span className={(lead.next_action_date ?? '') < now ? 'due-overdue' : 'due-today'}>
+                  <Tag tone={FOLLOW_UP_STATUS_TONES[status]}>
+                    {FOLLOW_UP_STATUS_LABELS[status]}
+                  </Tag>
+                  <span className={status === 'overdue' ? 'due-overdue' : 'due-today'}>
                     {relativeDue(lead.next_action_date as string, now)}
                   </span>
                   <Link className="btn btn-quiet" to="/pipeline">

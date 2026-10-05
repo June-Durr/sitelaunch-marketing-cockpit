@@ -16,6 +16,7 @@ import {
   BACKUP_FORMAT, BACKUP_SCHEMA_VERSION, buildBackup, parseAndValidate,
   serializeBackup, validateBackup,
 } from './backup';
+import { newActivity, newLead } from '../test/fixtures';
 
 /** A structurally valid backup object, ready to be broken in specific ways. */
 function validBackupObject(): Record<string, unknown> {
@@ -80,15 +81,15 @@ describe('export -> clear -> import recovers the dataset exactly', () => {
 
     // A disposable dataset: the seed plus rows covering every table.
     const before = await repo.loadAll();
-    const lead = await repo.insert('leads', {
+    const lead = await repo.insert('leads', newLead({
       content_item_id: before.contentItems[0].id,
-      prospect_name: 'Rivera Roofing', organization: 'Rivera', email: null, phone: null,
-      project: 'Site rebuild', source: 'Instagram story', related_campaign: null,
+      prospect_name: 'Rivera Roofing', organization: 'Rivera',
+      project: 'Site rebuild', source: 'Instagram story',
       stage: 'proposal', next_action: 'Send revised proposal',
-      next_action_date: '2026-09-18', proposed_value: 6000, closed_value: null,
-      attribution_note: 'Mentioned the story on the first call', notes: null,
-      is_seed: false, first_contact_at: '2026-09-14', closed_at: null,
-    });
+      next_action_date: '2026-09-18', proposed_value: 6000,
+      attribution_note: 'Mentioned the story on the first call',
+      first_contact_at: '2026-09-14',
+    }));
     await repo.insert('recommendations', {
       rule_id: 'R6_insufficient_evidence', headline: 'Not yet measurable',
       detail: 'Two items only.', suggested_action: null, confidence: 'early_signal',
@@ -96,17 +97,13 @@ describe('export -> clear -> import recovers the dataset exactly', () => {
       evidence: { lines: [], content_item_ids: [], excluded: [] },
       generated_at: '2026-09-14T00:00:00.000Z', dismissed_at: null,
     });
-    await repo.insert('activity_events', {
+    await repo.insert('activity_events', newActivity({
       occurred_at: '2026-09-18T15:00:00.000Z',
       activity_type: 'networking_event',
       title: 'Wynwood meetup',
       details: 'Three conversations worth following up',
-      source: 'manual', external_id: null,
-      content_item_id: null, lead_id: lead.id, task_id: null,
-      external_calendar_id: null, external_event_id: null,
-      calendar_sync_status: 'not_synced', last_synced_at: null, sync_error: null,
-      is_seed: false,
-    });
+      lead_id: lead.id,
+    }));
     await repo.insert('tasks', {
       content_item_id: null, lead_id: lead.id, title: 'Call Rivera',
       task_type: 'follow_up', status: 'open', due_date: '2026-09-18',
@@ -446,23 +443,13 @@ describe('activity survives backup and restore', () => {
     const repo = createLocalRepository();
     const content = (await repo.loadAll()).contentItems[0];
 
-    const logged = await repo.insert('activity_events', {
+    const logged = await repo.insert('activity_events', newActivity({
       occurred_at: '2026-09-18T15:00:00.000Z',
       activity_type: 'proposal_sent',
       title: 'Sent the Rivera proposal',
       details: 'Two options, mid and high',
-      source: 'manual',
-      external_id: null,
       content_item_id: content.id,
-      lead_id: null,
-      task_id: null,
-      external_calendar_id: null,
-      external_event_id: null,
-      calendar_sync_status: 'not_synced',
-      last_synced_at: null,
-      sync_error: null,
-      is_seed: false,
-    });
+    }));
 
     const original = await repo.loadAll();
     const json = serializeBackup(buildBackup(original, DEFAULT_SETTINGS));

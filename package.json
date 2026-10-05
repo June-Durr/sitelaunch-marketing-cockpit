@@ -13,7 +13,9 @@
     "screenshots": "node scripts/screenshots.mjs",
     "test:backup-e2e": "node scripts/backup-e2e.mjs",
     "test:activity-e2e": "node scripts/activity-e2e.mjs",
-    "test:db": "vitest run src/test/pg"
+    "test:db": "vitest run src/test/pg",
+    "qa:lead-mirror": "node scripts/lead-mirror-qa.mjs",
+    "qa:lead-mirror-live": "node scripts/lead-mirror-live-qa.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.116.0",

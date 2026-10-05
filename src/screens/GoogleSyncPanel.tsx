@@ -4,7 +4,9 @@ import { Empty, Notice, Section, Tag } from '../components/primitives';
 import { formatDateTime } from '../lib/dates';
 import { formatNumber } from '../lib/format';
 import type { AnalyticsProvider, AnalyticsStatus } from '../data/repository';
-import { STATUS_EXPLANATIONS, STATUS_LABELS, type IntegrationStatus } from '../types/integrations';
+import {
+  PROVIDER_LABELS, STATUS_EXPLANATIONS, STATUS_LABELS, type IntegrationStatus,
+} from '../types/integrations';
 
 /**
  * What the automatic Google sync is doing, and the one button that starts it.
@@ -109,6 +111,8 @@ export function GoogleSyncPanel() {
   const connectionFor = (provider: AnalyticsProvider) =>
     status?.connections.find((c) => c.provider === provider) ?? null;
 
+  // sync_runs is shared by every integration, so every read of it in this panel
+  // narrows to one provider first.
   const runsFor = (provider: AnalyticsProvider) =>
     (status?.runs ?? []).filter((r) => r.provider === provider);
 
@@ -199,9 +203,20 @@ export function GoogleSyncPanel() {
   );
 }
 
-/** The most recent failure per provider, as the server sanitized it. */
+/**
+ * The most recent failure per provider, as the server sanitized it.
+ *
+ * Filtered to the two providers this panel is about. sync_runs is shared by every
+ * integration, so without the filter a failure belonging to something else shows
+ * up here, and labelling it by a two-way guess would print the wrong provider's
+ * name next to it. That is worse than not showing it: it sends somebody to
+ * investigate a service that is working.
+ */
 function LastError({ status }: { status: AnalyticsStatus | null }) {
-  const failures = (status?.runs ?? []).filter((r) => r.status === 'failed');
+  const mine = new Set<string>(PROVIDERS.map((p) => p.id));
+  const failures = (status?.runs ?? []).filter(
+    (r) => r.status === 'failed' && mine.has(r.provider),
+  );
   if (failures.length === 0) return null;
 
   const latest = new Map<string, (typeof failures)[number]>();
@@ -211,7 +226,9 @@ function LastError({ status }: { status: AnalyticsStatus | null }) {
     <div style={{ marginTop: '1rem' }}>
       {[...latest.values()].map((run) => (
         <p key={run.id} className="notice notice-crimson">
-          <strong>{run.provider === 'ga4' ? 'Google Analytics' : 'Search Console'}</strong>{' '}
+          {/* Named from the shared label map, so a provider added later cannot
+              inherit the wrong name from a ternary. */}
+          <strong>{PROVIDER_LABELS[run.provider] ?? run.provider}</strong>{' '}
           failed at {formatDateTime(run.started_at)}: {run.error_summary}
         </p>
       ))}

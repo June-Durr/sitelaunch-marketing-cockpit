@@ -1,7 +1,8 @@
 import { createContext, useContext } from 'react';
 import type { Dataset } from '../types/domain';
 import type {
-  AnalyticsProvider, AnalyticsStatus, ImportReport, NewRow, RowPatch, SyncMode,
+  AnalyticsProvider, AnalyticsStatus, ImportReport, LeadMirrorAction,
+  LeadMirrorOutcome, LeadMirrorStatus, NewRow, ReconcileMode, RowPatch, SyncMode,
   SyncTriggerOutcome, TableMap, TableName,
 } from './repository';
 import { EMPTY_DATASET } from './repository';
@@ -35,6 +36,15 @@ export interface DataContextValue {
   loadAnalytics: (() => Promise<AnalyticsStatus>) | null;
   /** Null in browser-local mode. Asks the server to sync; never syncs in here. */
   triggerSync: ((provider: AnalyticsProvider, mode: SyncMode) => Promise<SyncTriggerOutcome>) | null;
+  /** Null in browser-local mode, which has no server to hold a Google key. */
+  loadLeadMirror: (() => Promise<LeadMirrorStatus>) | null;
+  /** Null in browser-local mode. Asks the server; never calls Google in here. */
+  triggerLeadMirror:
+    | ((
+        action: LeadMirrorAction,
+        options?: { mode?: ReconcileMode; expect?: { leadRows: number; touchRows: number } },
+      ) => Promise<LeadMirrorOutcome>)
+    | null;
 }
 
 export const DataContext = createContext<DataContextValue>({
@@ -60,6 +70,8 @@ export const DataContext = createContext<DataContextValue>({
   importDataset: null,
   loadAnalytics: null,
   triggerSync: null,
+  loadLeadMirror: null,
+  triggerLeadMirror: null,
 });
 
 export function useData(): DataContextValue {

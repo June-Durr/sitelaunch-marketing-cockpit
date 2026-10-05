@@ -74,14 +74,31 @@ describe('a fresh database takes every migration in order', () => {
     ]);
   });
 
-  it('creates both views', async () => {
+  it('creates every view', async () => {
     const views = (
       await rows(
         `select table_name from information_schema.views
          where table_schema = 'public' order by table_name`,
       )
     ).map((r) => r.table_name);
-    expect(views).toEqual(['cohort_stats', 'content_latest_snapshot']);
+    expect(views).toEqual([
+      'cohort_stats', 'content_latest_snapshot', 'lead_follow_up_today',
+    ]);
+  });
+
+  it('runs every view as the caller rather than as its owner', async () => {
+    // Without security_invoker a view reads its tables as whoever owns the view
+    // and walks straight past row level security. Asserted here against a real
+    // Postgres rather than by matching on the SQL text.
+    const leaky = await rows(
+      `select c.relname from pg_class c
+       join pg_namespace n on n.oid = c.relnamespace
+       where n.nspname = 'public' and c.relkind = 'v'
+         and coalesce(
+           (select option_value from pg_options_to_table(c.reloptions)
+            where option_name = 'security_invoker'), 'false') <> 'true'`,
+    );
+    expect(leaky).toEqual([]);
   });
 
   it('turns row level security on for every owned table', async () => {

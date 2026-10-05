@@ -8,7 +8,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { createLocalRepository } from '../data/localRepository';
 import { emptyDataset } from '../data/repository';
-import { blankCalendarSync } from '../data/factories';
 import { completeTask, skipTask } from '../data/taskCompletion';
 import type { Repository } from '../data/repository';
 import type { ActivityEvent, Dataset, Task } from '../types/domain';
@@ -17,26 +16,15 @@ import {
   needsTaskActivity, recentMeaningfulActivity, sortActivity,
 } from './activity';
 
+import { makeActivity, makeTask } from '../test/fixtures';
+
 const T = '2026-09-19T12:00:00.000Z';
 
-function task(over: Partial<Task> = {}): Task {
-  return {
-    id: 'tk1', content_item_id: null, lead_id: null,
-    title: 'Send the revised proposal', task_type: 'follow_up', status: 'open',
-    due_date: '2026-09-19', window_type: null, notes: 'Second attempt',
-    completed_at: null, ...blankCalendarSync(), is_seed: false,
-    created_at: T, updated_at: T, ...over,
-  };
-}
+const task = (over: Partial<Task> = {}): Task =>
+  makeTask({ id: 'tk1', notes: 'Second attempt', ...over });
 
-function activity(over: Partial<ActivityEvent> = {}): ActivityEvent {
-  return {
-    id: 'a1', occurred_at: T, activity_type: 'other', title: 'Something',
-    details: null, source: 'manual', external_id: null,
-    content_item_id: null, lead_id: null, task_id: null,
-    ...blankCalendarSync(), is_seed: false, created_at: T, updated_at: T, ...over,
-  };
-}
+const activity = (over: Partial<ActivityEvent> = {}): ActivityEvent =>
+  makeActivity({ id: 'a1', title: 'Something', ...over });
 
 /** A context standing in for the DataProvider, backed by a real local repository. */
 function harness(repo: Repository) {

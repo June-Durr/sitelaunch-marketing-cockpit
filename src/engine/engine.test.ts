@@ -13,6 +13,7 @@ import { csvNumber, parseCsv } from '../lib/csv';
 import { buildCohorts } from './cohorts';
 import { MIN_PATTERN, generateRecommendations, pickNextStep } from './recommendations';
 import { findMeasurementGaps } from './measurement';
+import { makeLead } from '../test/fixtures';
 
 const T = '2026-09-01T00:00:00.000Z';
 
@@ -281,15 +282,17 @@ describe('the single next step', () => {
       ...seed,
       tasks: [],
       leads: [
-        {
-          id: 'l1', content_item_id: null, prospect_name: 'Rivera Roofing',
-          organization: null, email: null, phone: null, project: 'Site rebuild',
-          source: null, related_campaign: null, stage: 'proposal',
-          next_action: 'Send the revised proposal', next_action_date: '2026-09-10',
-          proposed_value: 6000, closed_value: null, attribution_note: null, notes: null,
-          is_seed: false, first_contact_at: '2026-09-01', closed_at: null,
-          created_at: T, updated_at: T,
-        },
+        makeLead({
+          id: 'l1',
+          project: 'Site rebuild',
+          stage: 'proposal',
+          next_action: 'Send the revised proposal',
+          next_action_date: '2026-09-10',
+          proposed_value: 6000,
+          first_contact_at: '2026-09-01',
+          created_at: T,
+          updated_at: T,
+        }),
       ],
     };
     const step = pickNextStep(withLead, '2026-09-14');

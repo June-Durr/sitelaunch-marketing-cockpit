@@ -8,6 +8,10 @@ import { formatDay, relativeDue, today } from '../lib/dates';
 import { aggregate } from '../lib/metrics';
 import type { Lead } from '../types/domain';
 import { STAGE_LABELS, STAGE_ORDER } from '../types/domain';
+import {
+  FOLLOW_UP_STATUS_EXPLANATIONS, FOLLOW_UP_STATUS_LABELS, FOLLOW_UP_STATUS_TONES,
+  LAST_TOUCH_BASIS_LABELS, NEEDS_ACTION_STATUSES, followUpStates,
+} from '../config/followUp';
 
 const OPEN_STAGES = STAGE_ORDER.filter((s) => s !== 'won' && s !== 'lost');
 
@@ -25,6 +29,26 @@ export function Pipeline() {
     for (const lead of data.leads) map.get(lead.stage)?.push(lead);
     return map;
   }, [data.leads]);
+
+  /**
+   * Every lead's follow-up state, worked out once.
+   *
+   * All of it comes from src/config/followUp.ts, which is the only place in the
+   * app that does this arithmetic. The last touch is derived from the activity
+   * log rather than stored on the lead, so logging a contact changes this screen
+   * without anybody having to remember to update a date.
+   */
+  const states = useMemo(
+    () => followUpStates(data.leads, data.activityEvents, now),
+    [data.leads, data.activityEvents, now],
+  );
+  const stateById = useMemo(
+    () => new Map(states.map((state) => [state.lead.id, state])),
+    [states],
+  );
+
+  const needingAction = states.filter((s) => NEEDS_ACTION_STATUSES.includes(s.status));
+  const neverTouched = states.filter((s) => s.lastTouch.basis === 'none');
 
   const open = data.leads.filter((l) => l.stage !== 'won' && l.stage !== 'lost');
   const won = data.leads.filter((l) => l.stage === 'won');
@@ -57,6 +81,16 @@ export function Pipeline() {
           value={wonValue.sum === null ? 'None yet' : formatCurrency(wonValue.sum)}
           label="Closed won"
           note={`${won.length} won`}
+        />
+        <Stat
+          value={needingAction.length}
+          label="Need chasing"
+          note="follow-up today or already past"
+        />
+        <Stat
+          value={neverTouched.length}
+          label="No contact on record"
+          note="nothing logged, and nothing claimed"
         />
       </div>
 
@@ -100,10 +134,8 @@ export function Pipeline() {
                   <p className="field-hint">Nobody here yet</p>
                 ) : (
                   leads.map((lead) => {
-                    const overdue =
-                      lead.next_action_date !== null &&
-                      lead.next_action_date <= now &&
-                      !['won', 'lost'].includes(lead.stage);
+                    const state = stateById.get(lead.id);
+                    const overdue = state?.status === 'overdue';
                     return (
                       <button
                         className="board-card"
@@ -112,11 +144,18 @@ export function Pipeline() {
                       >
                         <div className="board-card-name">{lead.prospect_name}</div>
                         <div className="board-card-meta">
-                          {lead.project ?? 'No project named'}
+                          {lead.project ?? lead.organization ?? 'No project named'}
                         </div>
-                        {lead.next_action_date ? (
+                        <div className="board-card-meta">
+                          {state && state.daysSince !== null
+                            ? `${state.daysSince} ${state.daysSince === 1 ? 'day' : 'days'} since last touch`
+                            : 'No contact on record'}
+                        </div>
+                        {state && state.status !== 'closed' ? (
                           <div className={overdue ? 'board-card-meta due-overdue' : 'board-card-meta'}>
-                            {relativeDue(lead.next_action_date, now)}
+                            {lead.next_action_date
+                              ? `${FOLLOW_UP_STATUS_LABELS[state.status]} · ${relativeDue(lead.next_action_date, now)}`
+                              : FOLLOW_UP_STATUS_LABELS[state.status]}
                           </div>
                         ) : null}
                         {lead.proposed_value !== null ? (
@@ -141,40 +180,76 @@ export function Pipeline() {
                 <th>Project</th>
                 <th>Stage</th>
                 <th>Source</th>
-                <th>Related content</th>
+                <th>Last touch</th>
+                <th className="num">Days since</th>
                 <th>Next action</th>
-                <th>Follow-up</th>
+                <th>Next follow-up</th>
+                <th>Follow-up status</th>
                 <th className="num">Proposed</th>
                 <th className="num">Closed</th>
               </tr>
             </thead>
             <tbody>
-              {data.leads.map((lead) => {
-                const content = data.contentItems.find((c) => c.id === lead.content_item_id);
-                const overdue =
-                  lead.next_action_date !== null &&
-                  lead.next_action_date <= now &&
-                  !['won', 'lost'].includes(lead.stage);
+              {/* Worst first, so the table reads as the order to work it in. */}
+              {states.map(({ lead, lastTouch, daysSince, status }) => {
+                const overdue = status === 'overdue';
                 return (
                   <tr key={lead.id}>
                     <td data-label="Prospect">
                       <button className="row-button" onClick={() => setEditing({ lead })}>
                         {lead.prospect_name}
                       </button>
+                      {lead.organization ? (
+                        <div className="row-note">{lead.organization}</div>
+                      ) : null}
                     </td>
-                    <td data-label="Project">{lead.project ?? 'Not set'}</td>
+                    <td data-label="Project">
+                      {lead.project ?? lead.relationship ?? 'Not set'}
+                    </td>
                     <td data-label="Stage">
                       <Tag tone={lead.stage === 'won' ? 'violet' : 'quiet'}>
                         {STAGE_LABELS[lead.stage]}
                       </Tag>
                     </td>
                     <td data-label="Source">{lead.source ?? <Unknown />}</td>
-                    <td data-label="Related content">
-                      {content ? content.title : <Unknown note="No content linked" />}
+                    <td data-label="Last touch">
+                      {lastTouch.effectiveOn === null ? (
+                        <Unknown note="Nothing logged" />
+                      ) : (
+                        <>
+                          {formatDay(lastTouch.effectiveOn)}
+                          {/* Says which it is, so a spreadsheet's claim is never shown
+                              as though somebody had logged it. */}
+                          {lastTouch.basis === 'reported' ? (
+                            <div
+                              className="row-note"
+                              title={LAST_TOUCH_BASIS_LABELS.reported}
+                            >
+                              Reported, no activity logged
+                            </div>
+                          ) : null}
+                        </>
+                      )}
+                    </td>
+                    <td className="num" data-label="Days since">
+                      {daysSince === null ? <Unknown /> : daysSince}
                     </td>
                     <td data-label="Next action">{lead.next_action ?? 'Nothing planned'}</td>
-                    <td data-label="Follow-up" className={overdue ? 'due-overdue' : undefined}>
-                      {formatDay(lead.next_action_date)}
+                    <td
+                      data-label="Next follow-up"
+                      className={overdue ? 'due-overdue' : undefined}
+                    >
+                      {lead.next_action_date === null
+                        ? 'None set'
+                        : formatDay(lead.next_action_date)}
+                    </td>
+                    <td data-label="Follow-up status">
+                      <Tag
+                        tone={FOLLOW_UP_STATUS_TONES[status]}
+                        title={FOLLOW_UP_STATUS_EXPLANATIONS[status]}
+                      >
+                        {FOLLOW_UP_STATUS_LABELS[status]}
+                      </Tag>
                     </td>
                     <td className="num" data-label="Proposed">
                       <Observed value={lead.proposed_value} format="currency" />
@@ -194,6 +269,15 @@ export function Pipeline() {
         There are {OPEN_STAGES.length} stages before someone is won or lost. If you do not
         know which post brought someone in, leave it blank. The app will say it does not
         know, rather than crediting whatever you happened to publish that week.
+      </p>
+
+      <p className="notice">
+        Last touch comes from the activity log rather than a date somebody keeps up by
+        hand, so it moves when you record that something happened. A row marked reported
+        arrived from the imported mirror with a date but no record of what took place,
+        and it says so rather than pretending otherwise. Follow-up dates move themselves
+        when you log a contact, and the rules behind them are in one place, so this
+        screen, Today and the Google Sheet mirror can never disagree.
       </p>
 
       {editing ? <LeadForm lead={editing.lead} onClose={() => setEditing(null)} /> : null}

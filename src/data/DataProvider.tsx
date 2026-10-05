@@ -3,8 +3,8 @@ import type { Dataset } from '../types/domain';
 import { DataContext, type DataContextValue } from './context';
 import { createLocalRepository } from './localRepository';
 import {
-  EMPTY_DATASET, type AnalyticsProvider, type NewRow, type Repository, type RowPatch,
-  type SyncMode, type TableName,
+  EMPTY_DATASET, type AnalyticsProvider, type LeadMirrorAction, type NewRow,
+  type ReconcileMode, type Repository, type RowPatch, type SyncMode, type TableName,
 } from './repository';
 import { supabaseConfigured } from './supabaseClient';
 import { createSupabaseRepository } from './supabaseRepository';
@@ -99,6 +99,27 @@ export function DataProvider({ children }: { children: ReactNode }) {
       loadAnalytics: repo.loadAnalytics ? () => repo.loadAnalytics!() : null,
       triggerSync: repo.triggerSync
         ? (provider: AnalyticsProvider, mode: SyncMode) => repo.triggerSync!(provider, mode)
+        : null,
+      loadLeadMirror: repo.loadLeadMirror ? () => repo.loadLeadMirror!() : null,
+      /**
+       * Refreshes the dataset afterwards, unlike the analytics syncs.
+       *
+       * A reconciliation writes leads and activities, which are exactly the rows
+       * every screen is showing, so not reloading would leave the Pipeline
+       * displaying the pipeline from before the import.
+       */
+      triggerLeadMirror: repo.triggerLeadMirror
+        ? async (
+            action: LeadMirrorAction,
+            options?: {
+              mode?: ReconcileMode;
+              expect?: { leadRows: number; touchRows: number };
+            },
+          ) => {
+            const outcome = await repo.triggerLeadMirror!(action, options);
+            if (action === 'reconcile' && outcome.applied !== null) await refresh();
+            return outcome;
+          }
         : null,
     }),
     [data, error, loading, refresh, repo],

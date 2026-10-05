@@ -39,15 +39,25 @@ export type ConfidenceLabel = 'early_signal' | 'emerging_pattern' | 'reliable_pa
  */
 export type ActivityType =
   | 'content_published' | 'networking_event' | 'contact_added' | 'follow_up_sent'
-  | 'reply_received' | 'client_work' | 'website_update' | 'analytics_check'
-  | 'lead_created' | 'proposal_sent' | 'revenue_received' | 'unavailable'
-  | 'decision' | 'other';
+  | 'reply_received' | 'conversation' | 'client_work' | 'website_update'
+  | 'analytics_check' | 'lead_created' | 'proposal_sent' | 'revenue_received'
+  | 'unavailable' | 'decision' | 'other';
 
 /** Where an activity record came from. Never guessed. */
 export type ActivitySource = 'manual' | 'task_completion' | 'calendar' | 'import' | 'api';
 
 /** Calendar sync state. Nothing is connected yet, so everything starts not_synced. */
 export type CalendarSyncStatus = 'not_synced' | 'pending' | 'synced' | 'error';
+
+/**
+ * Why a lead has, or has not, a follow-up date.
+ *
+ * A blank next_action_date is ambiguous on its own: it can mean "deliberately not
+ * chasing this person" or "nobody has set one yet", and those call for opposite
+ * behaviour. The reason is stored rather than inferred. The rules that act on it
+ * live in src/config/followUp.ts.
+ */
+export type FollowUpMode = 'auto' | 'none' | 'hold' | 'archived';
 
 export interface Account {
   id: string;
@@ -184,6 +194,41 @@ export interface Lead {
   attribution_note: string | null;
   notes: string | null;
 
+  /**
+   * Where external_key came from, for example 'google_sheets'.
+   *
+   * Stored next to the key so two sources can never collide on the same string.
+   * Null for a lead nobody imported, which is most of them.
+   */
+  external_source: string | null;
+  /**
+   * The source system's own stable identifier, for example 'taylor-handyman'.
+   *
+   * This is what makes a re-import an update rather than a duplicate. It is not
+   * the row id: `id` stays a uuid the database generates, so a readable external
+   * id never becomes a primary key.
+   */
+  external_key: string | null;
+
+  /* The imported mirror's own words, kept as given rather than forced into an
+   * enum that does not fit them. See supabase/migrations/0007_lead_mirror.sql. */
+  relationship: string | null;
+  current_status: string | null;
+  preferred_channel: string | null;
+  record_confidence: string | null;
+
+  /** Why this lead has, or has not, a follow-up date. See src/config/followUp.ts. */
+  follow_up_mode: FollowUpMode;
+
+  /**
+   * A last-touch date a source asserted with no event record behind it.
+   *
+   * Used only when there is no confirmed activity, and every screen that shows it
+   * says which of the two it used. Inventing an activity to carry this date would
+   * fabricate a record of something happening.
+   */
+  reported_last_touch_at: string | null;
+
   is_seed: boolean;
   first_contact_at: string | null;
   closed_at: string | null;
@@ -231,6 +276,13 @@ export interface ActivityEvent {
   content_item_id: string | null;
   lead_id: string | null;
   task_id: string | null;
+
+  /** Which system external_id belongs to. Pairs with it, exactly as on Lead. */
+  external_source: string | null;
+  /** How the contact happened: email, phone, in person. Part of a touch's identity. */
+  channel: string | null;
+  /** Where the proof is. The name of a place somebody could check, never a credential. */
+  evidence_source: string | null;
 
   /* Calendar fields, same reservation as on Task. */
   external_calendar_id: string | null;
@@ -375,6 +427,7 @@ export const ACTIVITY_TYPE_LABELS: Record<ActivityType, string> = {
   contact_added: 'Added a contact',
   follow_up_sent: 'Sent a follow up',
   reply_received: 'Got a reply',
+  conversation: 'Had a conversation',
   client_work: 'Did client work',
   website_update: 'Updated the website',
   analytics_check: 'Checked the numbers',
@@ -391,7 +444,8 @@ export const ACTIVITY_TYPES = Object.keys(ACTIVITY_TYPE_LABELS) as ActivityType[
 /** Activity types that count as real business movement on the Today screen. */
 export const MEANINGFUL_ACTIVITY: ActivityType[] = [
   'lead_created', 'proposal_sent', 'revenue_received', 'reply_received',
-  'content_published', 'networking_event', 'follow_up_sent', 'decision',
+  'conversation', 'content_published', 'networking_event', 'follow_up_sent',
+  'decision',
 ];
 
 export const ACTIVITY_SOURCE_LABELS: Record<ActivitySource, string> = {

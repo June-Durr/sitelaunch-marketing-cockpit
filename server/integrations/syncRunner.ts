@@ -34,6 +34,12 @@ export interface SyncRunRecord {
   rowsRead: number | null;
   rowsWritten: number | null;
   errorSummary: string | null;
+  /**
+   * Counts a provider has that rows read and rows written cannot carry, such as
+   * a reconciliation's created, updated, unchanged and ambiguous tallies. Must be
+   * sanitized before it gets here: the owner can read this column.
+   */
+  details?: Record<string, unknown>;
 }
 
 /**

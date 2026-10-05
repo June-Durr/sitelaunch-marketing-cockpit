@@ -16,12 +16,20 @@ import {
   ACTIVITY_SOURCE_LABELS, ACTIVITY_TYPE_LABELS, CONFIDENCE_LABELS, FORMAT_LABELS,
   PLATFORM_LABELS, STAGE_LABELS, STATUS_LABELS, TASK_TYPE_LABELS, WINDOW_LABELS,
 } from '../types/domain';
+import { FOLLOW_UP_MODE_LABELS } from '../config/followUp';
 import type { TableName } from '../data/repository';
 import { EMPTY_DATASET } from '../data/repository';
 import { coerceSettings, DEFAULT_SETTINGS, type AppSettings } from '../data/settings';
 
 export const BACKUP_FORMAT = 'sitelaunch-marketing-cockpit-backup';
-export const BACKUP_SCHEMA_VERSION = 2;
+/**
+ * 3 added the relationship follow-up columns.
+ *
+ * leads gained an external key, the mirror's own labels, a follow-up mode and a
+ * reported last-touch date; activity_events gained a channel, an evidence source
+ * and an external source. See supabase/migrations/0007_lead_mirror.sql.
+ */
+export const BACKUP_SCHEMA_VERSION = 3;
 
 /**
  * Which schema version each table first appeared in.
@@ -39,6 +47,59 @@ export const TABLE_ADDED_IN: Record<TableName, number> = {
   tasks: 1,
   recommendations: 1,
   activity_events: 2,
+};
+
+/**
+ * Which schema version each field first appeared in, and what it should be when
+ * restoring a backup written before it existed.
+ *
+ * WHY THIS IS NOT JUST A WARNING
+ *
+ * A backup exported by an older build of this app genuinely does not have these
+ * keys, and that is not corruption. Rejecting the file would make the app refuse
+ * its own exports, and restoring the row untouched would be worse: a field that is
+ * `undefined` rather than `null` reads as "present but broken" to every check in
+ * the app that distinguishes a recorded blank from a missing one. So the field is
+ * filled with the value it would have had, and the restore says it did.
+ *
+ * The default for every added field is null, meaning not recorded, except
+ * follow_up_mode, which is 'auto': a lead imported from a backup that predates the
+ * idea of a follow-up mode was never deliberately held or archived.
+ */
+export const FIELD_ADDED_IN: Partial<Record<TableName, Record<string, number>>> = {
+  leads: {
+    external_source: 3,
+    external_key: 3,
+    relationship: 3,
+    current_status: 3,
+    preferred_channel: 3,
+    record_confidence: 3,
+    follow_up_mode: 3,
+    reported_last_touch_at: 3,
+  },
+  activity_events: {
+    external_source: 3,
+    channel: 3,
+    evidence_source: 3,
+  },
+};
+
+export const FIELD_DEFAULTS: Partial<Record<TableName, Record<string, unknown>>> = {
+  leads: {
+    external_source: null,
+    external_key: null,
+    relationship: null,
+    current_status: null,
+    preferred_channel: null,
+    record_confidence: null,
+    follow_up_mode: 'auto',
+    reported_last_touch_at: null,
+  },
+  activity_events: {
+    external_source: null,
+    channel: null,
+    evidence_source: null,
+  },
 };
 
 /** Database table name -> its array in the in-memory Dataset. */
@@ -170,7 +231,10 @@ const SPECS: Record<TableName, TableSpec> = {
     requiredStrings: ['prospect_name'],
     numerics: ['proposed_value', 'closed_value'],
     booleans: ['is_seed'],
-    enums: { stage: keysOf(STAGE_LABELS) },
+    enums: {
+      stage: keysOf(STAGE_LABELS),
+      follow_up_mode: keysOf(FOLLOW_UP_MODE_LABELS),
+    },
     refs: { content_item_id: 'content_items' },
   },
   tasks: {
@@ -295,6 +359,7 @@ export function validateBackup(raw: unknown): ValidationResult {
   for (const table of TABLE_NAMES) {
     const rows = tables[table] as unknown[];
     const seen = new Set<string>();
+    const backfilled = new Set<string>();
 
     rows.forEach((row, index) => {
       const where = `${table}[${index}]`;
@@ -303,6 +368,21 @@ export function validateBackup(raw: unknown): ValidationResult {
         return;
       }
       const record = row as Record<string, unknown>;
+
+      /**
+       * Fill in fields this backup predates, before anything is checked.
+       *
+       * Done per row rather than per table because a dataset can mix rows written
+       * by different builds, for instance after restoring an old backup and then
+       * adding a lead. A field that is present is never touched, whatever its
+       * value, so this can only ever add and never overwrite.
+       */
+      for (const [field, addedIn] of Object.entries(FIELD_ADDED_IN[table] ?? {})) {
+        if (field in record) continue;
+        if (addedIn <= fileVersion) continue;
+        record[field] = FIELD_DEFAULTS[table]?.[field] ?? null;
+        backfilled.add(field);
+      }
 
       const id = record.id;
       if (typeof id !== 'string' || id.trim() === '') {
@@ -351,6 +431,14 @@ export function validateBackup(raw: unknown): ValidationResult {
         }
       }
     });
+
+    if (backfilled.size > 0) {
+      warnings.push(
+        `This backup predates ${[...backfilled].sort().join(', ')} on "${table}", so ${
+          backfilled.size === 1 ? 'that field' : 'those fields'
+        } will restore blank. Nothing is lost that the backup ever held.`,
+      );
+    }
 
     idsByTable.set(table, seen);
   }

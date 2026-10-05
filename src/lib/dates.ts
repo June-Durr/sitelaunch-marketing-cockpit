@@ -13,6 +13,22 @@ export function today(): string {
   return toDayString(new Date());
 }
 
+/**
+ * The calendar day of a value that may already be one.
+ *
+ * toDayString takes an instant and asks what day it was here, which is right for
+ * a timestamp and wrong for a date. '2026-10-05' parses as midnight UTC, and
+ * midnight UTC is the evening of the 4th anywhere west of Greenwich, so running a
+ * bare day through it moves it backwards. Everything in this app that schedules
+ * from "the day something happened" has to accept either shape, because one
+ * caller has a timestamp and the next has a date off a spreadsheet.
+ */
+export function dayOf(value: string): string {
+  return /^\d{4}-\d{2}-\d{2}$/.test(value.trim())
+    ? value.trim()
+    : toDayString(value);
+}
+
 export function addDays(day: string, days: number): string {
   const d = new Date(`${day}T00:00:00`);
   d.setDate(d.getDate() + days);

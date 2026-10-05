@@ -65,6 +65,7 @@ function run(provider: 'ga4' | 'search_console'): SyncRun {
     rows_written: 90,
     error_summary: null,
     idempotency_key: `${provider}-2026-09-30`,
+    details: {},
     created_at: SYNCED_AT,
   };
 }
@@ -148,6 +149,10 @@ function supabaseContext(status: AnalyticsStatus): DataContextValue {
     replaceAll: null,
     importDataset: async () => unused(),
     loadAnalytics: async () => status,
+    // The lead mirror has its own panel and its own tests; these assert the
+    // analytics panel, so it is wired as unavailable rather than stubbed.
+    loadLeadMirror: null,
+    triggerLeadMirror: null,
     triggerSync: async () => ({ ok: true, status: 'succeeded', rowsWritten: 0, error: null }),
   };
 }
@@ -517,5 +522,79 @@ describe('browser-only mode still describes itself honestly', () => {
     // It is still the real importer, with the same no-zeroes promise.
     expect(section.querySelector('input[type="file"]')).toBeTruthy();
     expect(section.textContent).toMatch(/never fills a gap with a zero/);
+  });
+});
+
+/* ------------------------------------------------------------------------ */
+
+describe('a failure belonging to another integration is not blamed on these two', () => {
+  /**
+   * sync_runs is one table shared by every provider.
+   *
+   * Found by looking at the real screen rather than by reasoning about it: the
+   * lead mirror's first failed run appeared in this panel captioned "Search
+   * Console failed", because the caption came from a two-way ternary that treated
+   * everything that was not ga4 as Search Console. Showing somebody a failure
+   * against a service that is working is worse than showing nothing: they go and
+   * investigate the wrong thing.
+   */
+  function runFor(
+    provider: IntegrationConnection['provider'],
+    status: SyncRun['status'],
+    summary: string | null,
+  ): SyncRun {
+    return {
+      id: `run-${provider}-${status}`,
+      connection_id: null,
+      provider,
+      started_at: '2026-10-05T19:39:00.000Z',
+      completed_at: '2026-10-05T19:39:02.000Z',
+      status,
+      rows_read: null,
+      rows_written: null,
+      error_summary: summary,
+      idempotency_key: `${provider}-failed`,
+      details: {},
+      created_at: '2026-10-05T19:39:02.000Z',
+    };
+  }
+
+  const withForeignFailure = (): AnalyticsStatus => ({
+    ...analytics(4, 3),
+    runs: [
+      runFor(
+        'google_sheets',
+        'failed',
+        'Google Sheets GET failed (HTTP 403): PERMISSION_DENIED',
+      ),
+      ...analytics(4, 3).runs,
+    ],
+  });
+
+  it('does not report the lead mirror\u2019s failure as a Search Console failure', async () => {
+    renderSupabase('/data', <DataImport key="d" />, withForeignFailure());
+    await waitFor(() => expect(screen.getByRole('heading', { level: 1 })).toBeTruthy());
+
+    const section = sectionFor('Automatic analytics');
+    await waitFor(() => expect(within(section).getByText('Google Analytics 4')).toBeTruthy());
+
+    expect(section.textContent).not.toContain('Search Console failed');
+    expect(section.textContent).not.toContain('PERMISSION_DENIED');
+  });
+
+  it('still reports a real failure of one of its own two providers', async () => {
+    const broken: AnalyticsStatus = {
+      ...analytics(4, 3),
+      runs: [
+        runFor('search_console', 'failed', 'Search Console query failed (HTTP 500)'),
+        ...analytics(4, 3).runs,
+      ],
+    };
+    renderSupabase('/data', <DataImport key="d" />, broken);
+    await waitFor(() => expect(screen.getByRole('heading', { level: 1 })).toBeTruthy());
+
+    const section = sectionFor('Automatic analytics');
+    await waitFor(() => expect(section.textContent).toContain('HTTP 500'));
+    expect(section.textContent).toContain('Google Search Console');
   });
 });

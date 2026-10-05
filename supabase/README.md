@@ -15,6 +15,7 @@ is not.
 | 3 | `migrations/0004_security_hardening.sql` | `security_invoker` on both views, composite owner keys, the `owner_id` trigger |
 | 4 | `migrations/0005_integrations.sql` | Connections, sync runs, daily GA4 and Search Console tables |
 | 5 | `migrations/0006_analytics_schedule.sql` | pg_cron and pg_net, plus the helper the daily sync schedule calls. Creates no cron job. |
+| 6 | `migrations/0007_lead_mirror.sql` | Relationship follow-up columns, the three uniqueness indexes, and `lead_follow_up_state(as_of)`. Creates no table. |
 
 Migration 0006 starts nothing. It installs what a schedule needs and leaves the two
 `cron.schedule` statements commented at the bottom of the file, to be run by hand once
@@ -171,7 +172,7 @@ property and Search Console site.
 ## Deploying the sync functions
 
 ```
-supabase functions deploy sync-ga4 sync-search-console --use-api
+supabase functions deploy sync-ga4 sync-search-console sync-lead-mirror --use-api
 ```
 
 Both functions must be deployed with JWT verification off. That now comes from
@@ -202,6 +203,7 @@ the platform. These have to be set with `supabase secrets set`:
 | `GOOGLE_SERVICE_ACCOUNT_KEY` | The service account JSON, whole. Stored base64 encoded. |
 | `GA4_PROPERTY_ID` | GA4 property id. Not a secret, but it lives here with the rest. |
 | `SEARCH_CONSOLE_SITE_URL` | The Search Console property, exactly as Google writes it. |
+| `GOOGLE_SHEETS_SPREADSHEET_ID` | The lead mirror spreadsheet. Not a secret either, but it is configuration and belongs in one place rather than in a bundle nobody can rotate. |
 
 And these two in Vault, read by `trigger_analytics_sync` at call time:
 
@@ -220,3 +222,123 @@ choice here: it is one line with no braces, quotes or newlines, so nothing mangl
 the way through an env file. Set every secret from a file with
 `supabase secrets set --env-file`, never as `NAME=value` on a command line, where it
 would survive in shell history.
+
+---
+
+## The lead mirror
+
+One spreadsheet, two tabs, and a relationship that goes one way after a single
+import. `supabase/functions/sync-lead-mirror` does all three things it can do.
+
+### What it needs
+
+- `GOOGLE_SERVICE_ACCOUNT_KEY`, the same secret the analytics syncs already use.
+  No second credential.
+- `GOOGLE_SHEETS_SPREADSHEET_ID`, set with `supabase secrets set`. Deliberately not
+  in `.env.local`: the browser has no business knowing which spreadsheet this is,
+  and a `VITE_` variable is readable by anyone who opens developer tools.
+- The spreadsheet shared with the service account's own address as an **Editor**.
+  Read-only access is not enough, because the mirror is written. The address is
+  the `client_email` in the key, and it is also what the Cockpit shows as the
+  connection's display name.
+- The Google Sheets API enabled on the project.
+
+This is the one Google scope in the system that is not read-only
+(`auth/spreadsheets`). The analytics syncs stay read-only and should remain so.
+
+### Migration 0007
+
+```
+supabase db push
+```
+
+`0007_lead_mirror.sql` adds columns to `leads` and `activity_events`, three unique
+indexes, a `follow_up_mode` enum, a `details` column on `sync_runs`, and the
+`lead_follow_up_state(as_of)` function with a `lead_follow_up_today` view over it.
+It creates no table and drops nothing.
+
+Two notes on applying it:
+
+- It extends two existing enums (`integration_provider` gains `google_sheets`,
+  `activity_type` gains `conversation`). Postgres allows that inside a transaction
+  as long as the new value is not *used* in the same transaction, and nothing in
+  the file uses them, so it applies as one migration.
+- The three unique indexes are partial. If the database already holds two leads
+  with the same `external_key`, or two open follow-up tasks for one lead, the
+  index creation fails and the migration refuses. That is the correct behaviour:
+  the duplicate has to be resolved by a person, not by whichever row the index
+  happened to see first.
+
+### Running the reconciliation
+
+Three calls, and the order matters. All of them take the signed-in user's token,
+or the cron secret.
+
+```
+# 1. Look. Writes nothing, reports everything.
+{"action":"reconcile","mode":"dry_run"}
+
+# 2. Import, but only if the sheet is exactly what step 1 saw.
+{"action":"reconcile","mode":"live","expect":{"leadRows":21,"touchRows":15}}
+
+# 3. From then on, this is the only one that runs.
+{"action":"export"}
+```
+
+The `expect` block is required for a live run and has no default. A gate with a
+built-in answer stops meaning anything the moment the data moves on, so the caller
+has to state what it believes and the server refuses if the sheet disagrees. It
+also refuses if any row is ambiguous or unreadable. The Cockpit's
+**Bring the sheet in** button fills `expect` from the dry run it just did, which is
+why the button only appears after a clean check.
+
+A live run is nondestructive by construction: there is no delete anywhere in the
+path, and an update only ever writes a field the sheet actually had a value for, so
+a blank cell cannot erase what is already there.
+
+### The daily mirror sync
+
+Not scheduled by any migration. Turn it on only after the on-demand
+**Sync lead mirror now** button has worked at least once, the same rule as the
+analytics jobs:
+
+```
+select cron.schedule(
+  'sitelaunch-sync-lead-mirror-daily', '30 8 * * *',
+  $job$
+    select net.http_post(
+      url     := (select decrypted_secret from vault.decrypted_secrets
+                  where name = 'sync_functions_base_url') || '/sync-lead-mirror',
+      headers := jsonb_build_object(
+        'content-type', 'application/json',
+        'x-sync-cron-secret', (select decrypted_secret from vault.decrypted_secrets
+                               where name = 'sync_cron_secret')
+      ),
+      body    := jsonb_build_object('action', 'export'),
+      timeout_milliseconds := 120000
+    );
+  $job$
+);
+```
+
+08:30 UTC, fifteen minutes after Search Console, so the three jobs do not contend
+for outbound connections. The body says `export` explicitly: a scheduled job must
+never be able to trigger a reconciliation, and omitting the action would default to
+export anyway, but saying it leaves nothing to a default.
+
+To remove it:
+
+```
+select cron.unschedule('sitelaunch-sync-lead-mirror-daily');
+```
+
+### What the sync will not do
+
+- It never writes rows 1 to 5 of either tab, so the title, the introductory note,
+  the frozen header and any filter views survive because they are never addressed.
+- It never writes a row id, an owner id, a connection id, a token or the service
+  account address into the sheet. The Lead ID column carries a readable key.
+- It never reads the sheet back as truth. A cell somebody edits in the data region
+  is replaced by the next sync.
+- It never touches lead or activity data when it fails. The worst case is a
+  spreadsheet that is out of date, and the Cockpit carries on.

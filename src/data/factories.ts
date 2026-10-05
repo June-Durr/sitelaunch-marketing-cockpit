@@ -22,3 +22,20 @@ export function blankCalendarSync(): {
     sync_error: null,
   };
 }
+
+/**
+ * The touch fields every activity carries.
+ *
+ * channel and evidence_source are blank unless somebody said how the contact
+ * happened and where the proof is, and external_source is set only by whatever
+ * imported the record. Kept in one place for the same reason as the calendar
+ * fields above: a new call site that left them undefined would read as "imported
+ * from somewhere" to the mirror's own idempotency check.
+ */
+export function blankTouchFields(): {
+  external_source: string | null;
+  channel: string | null;
+  evidence_source: string | null;
+} {
+  return { external_source: null, channel: null, evidence_source: null };
+}

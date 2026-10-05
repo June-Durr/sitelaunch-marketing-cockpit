@@ -8,7 +8,7 @@
  */
 
 export type IntegrationProvider =
-  | 'ga4' | 'search_console' | 'google_calendar' | 'instagram'
+  | 'ga4' | 'search_console' | 'google_sheets' | 'google_calendar' | 'instagram'
   | 'facebook' | 'linkedin' | 'tiktok' | 'website_forms';
 
 export type IntegrationStatus =
@@ -42,6 +42,11 @@ export interface SyncRun {
   rows_written: number | null;
   error_summary: string | null;
   idempotency_key: string;
+  /**
+   * Counts a run produced that two numbers cannot carry, written server side
+   * through the sanitizer. Shape varies by provider, so it is read defensively.
+   */
+  details: Record<string, unknown>;
   created_at: string;
 }
 
@@ -86,6 +91,7 @@ export interface SearchConsoleDaily {
 export const PROVIDER_LABELS: Record<IntegrationProvider, string> = {
   ga4: 'Google Analytics',
   search_console: 'Google Search Console',
+  google_sheets: 'Google Sheets lead mirror',
   website_forms: 'Website enquiry forms',
   google_calendar: 'Google Calendar',
   instagram: 'Instagram',
@@ -122,6 +128,7 @@ export const STATUS_EXPLANATIONS: Record<IntegrationStatus, string> = {
 export const RECOMMENDED_ORDER: IntegrationProvider[] = [
   'ga4',
   'search_console',
+  'google_sheets',
   'website_forms',
   'google_calendar',
   'instagram',
@@ -136,7 +143,9 @@ export const RECOMMENDED_ORDER: IntegrationProvider[] = [
  * Anything listing providers for the user to act on should leave these out rather
  * than render a second, duller copy of a state that is already on screen.
  */
-export const SYNCING_PROVIDERS: IntegrationProvider[] = ['ga4', 'search_console'];
+export const SYNCING_PROVIDERS: IntegrationProvider[] = [
+  'ga4', 'search_console', 'google_sheets',
+];
 
 /** RECOMMENDED_ORDER minus the two that already sync. Still in the same order. */
 export const REMAINING_ORDER: IntegrationProvider[] = RECOMMENDED_ORDER.filter(
@@ -146,6 +155,8 @@ export const REMAINING_ORDER: IntegrationProvider[] = RECOMMENDED_ORDER.filter(
 export const PROVIDER_NOTES: Record<IntegrationProvider, string> = {
   ga4: 'Daily website visits by source, so a post can be tied to real traffic.',
   search_console: 'What people searched for before they landed on the site.',
+  google_sheets:
+    'A readable mirror of the pipeline, rewritten from the database. Never read back as truth.',
   website_forms: 'Enquiries from the site, landing straight in the Pipeline.',
   google_calendar: 'Tasks out to the calendar, events back in as activity.',
   instagram: 'Post level numbers, so they stop being typed in by hand.',

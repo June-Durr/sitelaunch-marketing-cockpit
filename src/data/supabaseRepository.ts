@@ -6,7 +6,8 @@
 
 import type { Dataset } from '../types/domain';
 import type {
-  AnalyticsProvider, AnalyticsStatus, ImportReport, NewRow, Repository, RowPatch,
+  AnalyticsProvider, AnalyticsStatus, ImportReport, LeadMirrorAction,
+  LeadMirrorOutcome, LeadMirrorStatus, NewRow, ReconcileMode, Repository, RowPatch,
   SyncMode, SyncTriggerOutcome, TableMap, TableName,
 } from './repository';
 import { IMPORT_ORDER } from './repository';
@@ -273,6 +274,110 @@ export function createSupabaseRepository(): Repository {
     },
 
     /**
+     * The lead mirror's own connection row and its last few runs.
+     *
+     * Read only, and scoped to this provider so the panel does not pay for the
+     * analytics tables it never shows. A project that has not applied migration
+     * 0007 yet reports as empty rather than as an error, so the Data screen still
+     * loads.
+     */
+    async loadLeadMirror(): Promise<LeadMirrorStatus> {
+      const [connections, runs] = await Promise.all([
+        selectOptionalWhere<IntegrationConnection>(
+          'integration_connections', 'provider', 'google_sheets', 'updated_at', false, 1,
+        ),
+        selectOptionalWhere<SyncRun>(
+          'sync_runs', 'provider', 'google_sheets', 'started_at', false, 20,
+        ),
+      ]);
+      return { connection: connections[0] ?? null, runs };
+    },
+
+    /**
+     * Ask the server to reconcile the Sheet in, or to rewrite it from here.
+     *
+     * Sends this browser's session and nothing else. The Google credential and
+     * the spreadsheet id live in the function's own secrets, so a person pressing
+     * the button never holds either and this request cannot carry them.
+     */
+    async triggerLeadMirror(
+      action: LeadMirrorAction,
+      options: {
+        mode?: ReconcileMode;
+        expect?: { leadRows: number; touchRows: number };
+      } = {},
+    ): Promise<LeadMirrorOutcome> {
+      const empty = (status: string, error: string): LeadMirrorOutcome => ({
+        ok: false,
+        status,
+        counts: null,
+        ambiguous: [],
+        rejected: [],
+        warnings: [],
+        gateReasons: [],
+        applied: null,
+        leadRows: null,
+        touchRows: null,
+        error,
+      });
+
+      const { data: session } = await db.auth.getSession();
+      const token = session.session?.access_token;
+      if (!token) return empty('not_signed_in', 'Sign in first.');
+
+      let response: Response;
+      try {
+        response = await fetch(`${functionsBaseUrl()}/sync-lead-mirror`, {
+          method: 'POST',
+          headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+          body: JSON.stringify({
+            action,
+            ...(options.mode ? { mode: options.mode } : {}),
+            ...(options.expect ? { expect: options.expect } : {}),
+          }),
+        });
+      } catch {
+        return empty(
+          'unreachable',
+          'Could not reach the lead mirror function. It may not be deployed yet.',
+        );
+      }
+
+      let body: Record<string, unknown> = {};
+      try {
+        body = (await response.json()) as Record<string, unknown>;
+      } catch {
+        body = {};
+      }
+
+      const gate = body.gate as { reasons?: string[] } | undefined;
+      const asNumber = (value: unknown) => (typeof value === 'number' ? value : null);
+
+      return {
+        ok: response.ok,
+        status:
+          typeof body.status === 'string'
+            ? body.status
+            : response.ok
+              ? 'unknown'
+              : `http_${response.status}`,
+        counts: (body.counts as Record<string, number> | undefined) ?? null,
+        ambiguous: Array.isArray(body.ambiguous)
+          ? (body.ambiguous as LeadMirrorOutcome['ambiguous'])
+          : [],
+        rejected: Array.isArray(body.rejected)
+          ? (body.rejected as LeadMirrorOutcome['rejected'])
+          : [],
+        warnings: Array.isArray(body.warnings) ? (body.warnings as string[]) : [],
+        gateReasons: Array.isArray(gate?.reasons) ? (gate.reasons as string[]) : [],
+        applied: (body.applied as LeadMirrorOutcome['applied']) ?? null,
+        leadRows: asNumber(body.leadRows),
+        touchRows: asNumber(body.touchRows),
+        error: typeof body.error === 'string' ? body.error : null,
+      };
+    },
+
+    /**
      * Ask the server to sync now.
      *
      * Sends this browser's session and nothing else. The Google credential lives
@@ -347,6 +452,31 @@ export function createSupabaseRepository(): Repository {
     if (error) {
       // 42P01 is "relation does not exist". Anything else is a real problem.
       if (error.code === '42P01') return [];
+      throw new Error(`${table}: ${error.message}`);
+    }
+    return (data ?? []) as T[];
+  }
+
+  /** selectOptional, narrowed to one column's value. Same tolerance of a missing table. */
+  async function selectOptionalWhere<T>(
+    table: string,
+    column: string,
+    value: string,
+    orderBy: string,
+    ascending: boolean,
+    limit: number,
+  ): Promise<T[]> {
+    const { data, error } = await db
+      .from(table)
+      .select('*')
+      .eq(column, value)
+      .order(orderBy, { ascending, nullsFirst: false })
+      .limit(limit);
+
+    if (error) {
+      // 42P01 is "relation does not exist"; 22P02 is an enum value this database
+      // does not have yet, which is what an unapplied migration 0007 looks like.
+      if (error.code === '42P01' || error.code === '22P02') return [];
       throw new Error(`${table}: ${error.message}`);
     }
     return (data ?? []) as T[];

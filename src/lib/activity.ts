@@ -15,7 +15,7 @@ import type {
   ActivityEvent, ActivityType, Dataset, Task, TaskType,
 } from '../types/domain';
 import { MEANINGFUL_ACTIVITY } from '../types/domain';
-import { blankCalendarSync } from '../data/factories';
+import { blankCalendarSync, blankTouchFields } from '../data/factories';
 
 /** What kind of activity finishing a given task represents. */
 export const TASK_TO_ACTIVITY: Record<TaskType, ActivityType> = {
@@ -41,6 +41,7 @@ export function activityFromTask(
     content_item_id: task.content_item_id,
     lead_id: task.lead_id,
     task_id: task.id,
+    ...blankTouchFields(),
     ...blankCalendarSync(),
     is_seed: false,
   };

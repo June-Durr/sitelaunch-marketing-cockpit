@@ -114,6 +114,23 @@ and should not be. They are separate tables so a plan can never be mistaken for 
   immutable `owner_id`.
 - Integration tables: connections, sync runs, daily GA4 and Search Console.
 
+### Added in the relationship follow-up sprint, 2026-10-05
+
+- `leads` gained an external key, the mirror's own labels, a follow-up mode and a
+  reported last-touch date. `activity_events` gained a channel, an evidence source
+  and an external source. No new tables: a relationship is a lead and a touch is an
+  activity.
+- One documented configuration module for follow-up rules,
+  `src/config/followUp.ts`, plus the same derivation in SQL as
+  `lead_follow_up_state(as_of)` for anything server side. A database test runs both
+  over the same cases and fails if they disagree.
+- Last touch, days since touch, next follow-up and follow-up status in Pipeline,
+  derived from the activity log rather than stored.
+- Logging a contact creates or reschedules exactly one follow-up task, enforced by
+  a partial unique index as well as by the code.
+- A one-time Google Sheet reconciliation, as a dry run and then a gated live
+  import, and a server-side sync that rewrites the Sheet from Supabase afterwards.
+
 ### Explicitly out of scope for v1
 - Instagram / Facebook / LinkedIn Graph API OAuth.
 - GA4 Data API and Search Console API.
@@ -369,6 +386,101 @@ credentials to live, for no capability this app needs.
 
 ---
 
+## 14. Where this is going
+
+Recorded here while the v1 Google Sheet connection is being built, because the
+shape of that connection is only defensible if the destination is written down.
+None of this section is built yet. It is here to be designed against, not
+implemented in this sprint.
+
+### 14.1 The Sheet is Alberto's migration, not every customer's job
+
+The spreadsheet connected in October 2026 is a private, one-off reconciliation of
+a history that was kept by hand, plus a readable mirror afterwards. It is
+deliberately **not** the shape of the product.
+
+No future customer is expected to build, maintain or import a spreadsheet. A
+customer who wants one gets a mirror of their own data, as an export and a
+convenience; a customer who does not want one never hears about it. Anything in
+the code that assumed otherwise would be a design error, which is why the Sheet
+is modelled as one optional provider in `integration_connections` rather than as a
+required step in onboarding, and why nothing on any screen depends on the
+spreadsheet being current.
+
+### 14.2 The intended customer workflow
+
+1. A customer creates an account.
+2. They connect Google Calendar, and any other Google Workspace service they want,
+   through their own OAuth authorization. Their tokens, not a shared service
+   account.
+3. They connect their own analytics and social accounts through each provider's
+   OAuth.
+4. The Cockpit stores the normalized, authoritative records in Supabase.
+5. They tell the Cockpit AI things in plain words: "Add Taylor from Your Local
+   Handyman", "I emailed him today", "Remind me to follow up next week".
+6. The AI performs validated, server-side tool calls that create or update the
+   lead, add the touch to the history, recalculate the next follow-up, and create
+   or reschedule the matching calendar item.
+7. The Google Sheet, if they want one at all, is a synchronized mirror or an
+   export. It is never the AI's memory and never a source of truth.
+8. There is no double entry. One sentence updates Supabase, the Cockpit screens,
+   the optional Sheet and the relevant calendar item, because they are all reading
+   or being written from the same record.
+9. Manual forms stay as an administrative fallback, for recovery and for the
+   things conversation is bad at. They are not the intended path.
+10. Daily operational data arrives from APIs, OAuth, webhooks, scheduled syncs or
+    conversational tool calls. After the one historical reconciliation, nothing
+    routine should require typing.
+
+### 14.3 What this sprint did to make that possible
+
+Three things, all of them deliberate rather than incidental:
+
+- **Recording a touch is a function, not a submit handler.** `recordContact` in
+  `src/data/leadFollowUp.ts` takes a lead, a day and a repository, and does the
+  whole job: schedule or reschedule the one follow-up, move the lead's date, leave
+  a reason. A server-side tool call needs the same function with a different
+  transport, not a reimplementation of a form.
+- **The follow-up rule is configuration, in one place.** `src/config/followUp.ts`
+  holds the cadence per stage, the due-soon threshold, and which activity types
+  count as contact. An AI that suggests when to chase somebody will read this
+  rather than invent its own arithmetic, so its suggestions and the screens cannot
+  disagree.
+- **Authority is in Supabase and derivable there.** `lead_follow_up_state(as_of)`
+  answers "how long has this person been waiting, and what is their follow-up
+  status" in the database, as at any date. Recommendations are meant to read that,
+  not scrape a spreadsheet.
+
+### 14.4 The daily home screen, eventually
+
+Today becomes something closer to a business newspaper: one screen, read once a
+day, that says what happened and what to do. The sections, in the order they
+matter:
+
+- Traffic and search movement
+- Social content performance
+- Leads needing attention
+- Days since the last confirmed touch
+- Today's follow-ups and calendar commitments
+- Recommended outreach
+- Recommended content, and when to post it
+- The evidence behind each recommendation
+- Progress against the customer's 30, 60 or 90 day program
+
+Two rules carry over from everything above. Every recommendation reads
+authoritative Supabase records, never a spreadsheet. And every recommendation
+shows its evidence, because a suggestion whose reasoning cannot be inspected is a
+suggestion nobody should act on.
+
+### 14.5 What is deliberately not being attempted yet
+
+Multi-user OAuth, per-customer token storage, the AI tool-call layer and the
+newspaper screen itself. Each one is a sprint. Writing them down is not the same
+as starting them, and starting them early would have meant shipping a Sheet
+connection with a multi-tenant abstraction nobody had tested.
+
+---
+
 ## 11. Acceptance criteria
 
 1. A content item can be created, published, snapshotted at 24h and 7d, and appear on
@@ -379,3 +491,13 @@ credentials to live, for no capability this app needs.
    cards, not performance claims.
 5. `npm run lint`, `npm run typecheck`, and `npm run build` all pass clean.
 6. The app is usable at 375px width.
+7. A lead's last touch comes from its activity history, and a date that was only
+   reported by an import is labelled as reported rather than shown as logged.
+8. Running the Google Sheet reconciliation three times creates no extra leads and
+   no extra activities.
+9. A sheet row that could match more than one existing person is left completely
+   unchanged and reported.
+10. Logging a contact leaves exactly one open follow-up task for that lead, and a
+    lead on hold, archived or set to no follow-up has nothing scheduled for it.
+11. No Google credential, service account address, private key or spreadsheet id
+    appears anywhere in the built browser bundle.

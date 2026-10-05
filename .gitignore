@@ -10,6 +10,8 @@ lerna-debug.log*
 node_modules/
 dist/
 dist-ssr/
+# A throwaway build made in browser-local mode for visual QA.
+dist-qa/
 *.local
 
 # Editor directories and files

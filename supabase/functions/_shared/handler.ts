@@ -139,14 +139,14 @@ export async function handleSyncRequest<Row extends { date: string }>(
   } catch (error) {
     const summary = sanitizeError(error);
     safeLog(`${config.provider}: credentials unusable`, summary);
-    await markConnectionError(client, caller.ownerId, config.provider as 'ga4', summary);
+    await markConnectionError(client, caller.ownerId, config.provider, summary);
     return withCors(json({ status: 'failed', error: summary }, 500));
   }
 
   let connectionId: string | null = null;
   try {
     connectionId = await ensureConnection(
-      client, caller.ownerId, config.provider as 'ga4',
+      client, caller.ownerId, config.provider,
       config.accountId, tokenSource.describe(), config.scopes,
     );
   } catch (error) {
@@ -168,10 +168,10 @@ export async function handleSyncRequest<Row extends { date: string }>(
 
   if (result.status === 'failed') {
     await markConnectionError(
-      client, caller.ownerId, config.provider as 'ga4', result.errorSummary ?? 'Sync failed',
+      client, caller.ownerId, config.provider, result.errorSummary ?? 'Sync failed',
     );
   } else if (result.status === 'succeeded') {
-    await markConnectionSynced(client, caller.ownerId, config.provider as 'ga4');
+    await markConnectionSynced(client, caller.ownerId, config.provider);
   }
 
   safeLog(
