@@ -12,10 +12,19 @@
  * The plan comes from the real planner in server/integrations/leadMirror.ts. The
  * writes are the same statements supabase/functions/_shared/leadMirrorStore.ts
  * makes, reproduced here in SQL, because that file imports the Supabase client
- * from jsr: and cannot be loaded in this runtime. So this proves the plan is
- * right and that the database enforces what it is meant to enforce; it does not
- * prove the PostgREST calls are spelled correctly. That is what the dry run
- * against the live project is for.
+ * from jsr: and cannot be loaded in this runtime.
+ *
+ * THE TOUCH UPSERT IS WRITTEN THE WAY POSTGREST WRITES IT, ON PURPOSE
+ *
+ * An earlier version of this file spelled the conflict target as
+ * `on conflict (...) where external_id is not null and external_source is not
+ * null do nothing`. That passed, and the real import failed, because PostgREST's
+ * onConflict parameter is a list of column names with nowhere to put a WHERE
+ * clause, and Postgres will not use a partial unique index as an arbiter unless
+ * the statement restates its predicate. Writing the predicate here reproduced the
+ * intent and not the mechanism, which is the only kind of test that is worse than
+ * no test at all. The bare form below is what the client actually sends, so this
+ * now fails if the index ever goes back to being partial. See migration 0008.
  *
  * Every record here is invented. No production data is needed to run this.
  */
@@ -207,9 +216,7 @@ async function applyPlan(owner: string, plan: ReconciliationPlan) {
          (owner_id, occurred_at, activity_type, title, details, source,
           external_source, external_id, channel, evidence_source, lead_id, is_seed)
        values ($1, $2, $3, $4, $5, 'import', $6, $7, $8, $9, $10, false)
-       on conflict (owner_id, external_source, external_id)
-         where external_id is not null and external_source is not null
-         do nothing
+       on conflict (owner_id, external_source, external_id) do nothing
        returning id`,
       [
         owner,
@@ -509,6 +516,42 @@ describe('the database refuses a duplicate even if the code asks for one', () =>
     await expect(seedRow(t, USER_A, 'activity_events', shared)).rejects.toThrow(
       /activity_events_unique_external_key|duplicate key/i,
     );
+  });
+
+  it('accepts the bare ON CONFLICT that PostgREST actually sends', async () => {
+    /**
+     * The regression this exists for.
+     *
+     * A partial unique index enforces the right rule and still cannot arbitrate
+     * an upsert, so the first live reconciliation created every lead and then
+     * failed on every touch. Nothing in the suite noticed, because the only test
+     * that exercised the conflict wrote a predicate the real client cannot send.
+     */
+    const leadId = await seedRow(t, USER_A, 'leads', { prospect_name: 'Taylor' });
+    const insert = `
+      insert into activity_events
+        (owner_id, occurred_at, activity_type, title, source, external_source,
+         external_id, lead_id)
+      values ($1, $2, 'follow_up_sent', 'Follow-up sent', 'import', $3, $4, $5)
+      on conflict (owner_id, external_source, external_id) do nothing
+      returning id`;
+    const args = [
+      USER_A, '2026-09-24T12:00:00.000Z', MIRROR_SOURCE, 'touch-fingerprint', leadId,
+    ];
+
+    const first = await t.db.query<{ id: string }>(insert, args);
+    expect(first.rows).toHaveLength(1);
+
+    // And the second one is silently ignored rather than raising, which is what
+    // ignoreDuplicates means in the store.
+    const second = await t.db.query<{ id: string }>(insert, args);
+    expect(second.rows).toHaveLength(0);
+
+    const total = await t.db.query<{ n: string }>(
+      'select count(*)::text as n from activity_events where owner_id = $1',
+      [USER_A],
+    );
+    expect(Number(total.rows[0].n)).toBe(1);
   });
 
   it('lets any number of activities have no external id', async () => {

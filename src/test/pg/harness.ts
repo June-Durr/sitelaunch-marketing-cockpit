@@ -35,6 +35,7 @@ export const MIGRATION_FILES = [
   '0004_security_hardening.sql',
   '0005_integrations.sql',
   '0007_lead_mirror.sql',
+  '0008_mirror_conflict_target.sql',
 ];
 
 export const USER_A = '11111111-1111-1111-1111-111111111111';

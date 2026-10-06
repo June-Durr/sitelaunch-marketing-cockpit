@@ -16,6 +16,7 @@ is not.
 | 4 | `migrations/0005_integrations.sql` | Connections, sync runs, daily GA4 and Search Console tables |
 | 5 | `migrations/0006_analytics_schedule.sql` | pg_cron and pg_net, plus the helper the daily sync schedule calls. Creates no cron job. |
 | 6 | `migrations/0007_lead_mirror.sql` | Relationship follow-up columns, the three uniqueness indexes, and `lead_follow_up_state(as_of)`. Creates no table. |
+| 7 | `migrations/0008_mirror_conflict_target.sql` | Makes the activity external-key index usable as an `ON CONFLICT` target. Same rule, no predicate. |
 
 Migration 0006 starts nothing. It installs what a schedule needs and leaves the two
 `cron.schedule` statements commented at the bottom of the file, to be run by hand once
@@ -268,6 +269,23 @@ Two notes on applying it:
   index creation fails and the migration refuses. That is the correct behaviour:
   the duplicate has to be resolved by a person, not by whichever row the index
   happened to see first.
+
+### Migration 0008, and why it was needed
+
+0007's activity index was partial, and a partial unique index cannot arbitrate an
+upsert unless the statement restates its predicate. PostgREST's `onConflict` is a
+list of column names with nowhere to put one, so the first live reconciliation
+inserted all twenty-one leads and then failed on every touch with *there is no
+unique or exclusion constraint matching the ON CONFLICT specification*.
+
+0008 drops the predicate. The rule is unchanged, because nulls are distinct in a
+unique index anyway, so a row with no external id was never constrained by the
+predicate in the first place.
+
+The lesson is in `src/test/pg/leadMirror.test.ts`: its applier used to spell the
+conflict target with the predicate written out, which Postgres accepts and the
+real client cannot send. It reproduced the intent and not the mechanism, so it
+passed while production failed. It now sends the bare form.
 
 ### Running the reconciliation
 

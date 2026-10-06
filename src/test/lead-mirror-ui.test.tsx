@@ -11,7 +11,7 @@
  * The leads below are invented, and every date is fixed.
  */
 
-import { describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import type { ReactNode } from 'react';
@@ -156,6 +156,30 @@ async function openData(value: DataContextValue) {
   await waitFor(() => expect(screen.getByRole('heading', { level: 1 })).toBeTruthy());
   // The panel reads its state in an effect, so wait for it to settle.
   await waitFor(() => expect(within(panel()).queryByText('Connected')).toBeTruthy());
+}
+
+/**
+ * Pin the clock for the screens that do date arithmetic.
+ *
+ * Pipeline and Today call today() and work everything out from the real system
+ * date, so an assertion like "11 days since the last touch" is only true on one
+ * particular day. The first version of this file hardcoded those numbers against
+ * fixed fixture dates and passed for exactly one day before failing. Fixed
+ * fixtures are not enough on their own: the clock has to be fixed too.
+ *
+ * Midday local, so no timezone can push it onto a neighbouring date.
+ */
+const PINNED_TODAY = '2026-10-05';
+
+function pinTheClock() {
+  beforeAll(() => {
+    // shouldAdvanceTime, so testing-library's waitFor still makes progress.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date(`${PINNED_TODAY}T12:00:00`));
+  });
+  afterAll(() => {
+    vi.useRealTimers();
+  });
 }
 
 /* ============================================================ the panel === */
@@ -559,6 +583,8 @@ async function openPipelineTable(data: Dataset) {
 }
 
 describe('the Pipeline shows how long somebody has been waiting', () => {
+  pinTheClock();
+
   it('has a column for each of the four things', async () => {
     const table = await openPipelineTable(pipelineData());
     const headers = within(table)
@@ -576,7 +602,8 @@ describe('the Pipeline shows how long somebody has been waiting', () => {
     const row = within(table).getByText('Taylor').closest('tr') as HTMLElement;
 
     expect(row.textContent).toContain('Sep 24, 2026');
-    // 2026-09-24 to 2026-10-05 is 11 days, and the app worked that out itself.
+    // 2026-09-24 to the pinned 2026-10-05 is 11 days, and the app worked that
+    // out from the activity log rather than reading a stored number.
     expect(within(row).getByText('11')).toBeTruthy();
     expect(row.textContent).not.toContain('Reported, no activity logged');
   });
@@ -628,6 +655,8 @@ describe('the Pipeline shows how long somebody has been waiting', () => {
 /* ============================================================= the today == */
 
 describe('Today surfaces the people who are actually waiting', () => {
+  pinTheClock();
+
   it('lists the overdue lead with how long it has been', async () => {
     renderWith(supabaseContext({ data: pipelineData() }), '/', <Today key="t" />);
     await waitFor(() => expect(screen.getByRole('heading', { level: 1 })).toBeTruthy());

@@ -431,16 +431,45 @@ describe('the Google Sheet mirror schema stores nothing secret', () => {
   it('makes a duplicate impossible rather than merely unlikely', () => {
     for (const [index, columns] of [
       ['leads_unique_external_key', '(owner_id, external_source, external_key)'],
-      ['activity_events_unique_external_key', '(owner_id, external_source, external_id)'],
       ['tasks_one_open_follow_up_per_lead', '(owner_id, lead_id)'],
     ] as [string, string][]) {
       const at = sql.indexOf(`create unique index ${index}`);
       expect(at, `${index} is missing`).toBeGreaterThan(-1);
       const block = sql.slice(at, at + 400);
       expect(block, index).toContain(columns);
-      // Partial, so the index covers only the rows it is meant to.
+      // Partial, so the index covers only the rows it is meant to. Neither of
+      // these is ever an ON CONFLICT target, so a predicate costs them nothing.
       expect(block, index).toContain('where');
     }
+  });
+
+  it('keeps the activity external key usable as an upsert target', () => {
+    /**
+     * Migration 0008 replaced 0007's partial version of this index.
+     *
+     * Postgres will not use a partial unique index to arbitrate an upsert unless
+     * the statement restates the predicate, and PostgREST cannot. Nulls are
+     * distinct in a unique index anyway, so dropping the predicate kept the rule
+     * and made the upsert work. If it ever goes back, the touch import breaks
+     * again, so this pins it.
+     */
+    const later = sqlFor('0008_mirror_conflict_target.sql');
+    // 0008 quotes 0007's old definition in its own explanation, so the executable
+    // part has to be looked at on its own.
+    const executable = later
+      .replace(/\/\*[\s\S]*?\*\//g, ' ')
+      .replace(/--.*/g, ' ')
+      .toLowerCase();
+
+    expect(executable).toContain('drop index if exists activity_events_unique_external_key');
+
+    const at = executable.indexOf('create unique index activity_events_unique_external_key');
+    expect(at, 'the index is not recreated').toBeGreaterThan(-1);
+    const statement = executable.slice(at, executable.indexOf(';', at));
+
+    expect(statement).toContain('(owner_id, external_source, external_id)');
+    expect(statement, 'a predicate makes it unusable for ON CONFLICT')
+      .not.toContain('where');
   });
 
   it('keeps the one-open-follow-up index to open follow-ups', () => {

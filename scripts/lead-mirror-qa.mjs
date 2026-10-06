@@ -15,10 +15,15 @@
  * NO PRODUCTION DATA. Every person below is invented and every date is fixed, so
  * the same run produces the same screenshots whenever it is run.
  *
+ * MIRROR_DATASET=<path> swaps the fixtures for a dataset read out of a real
+ * database, which is how the imported records are checked on the real screens
+ * without signing anybody in. The components, the follow-up configuration and the
+ * rendering are identical either way; only the adapter underneath differs.
+ *
  *   node scripts/lead-mirror-qa.mjs [baseUrl]
  */
 
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { chromium } from 'playwright';
 
 const BASE = process.argv[2] ?? 'http://localhost:4173';
@@ -184,10 +189,23 @@ const tasks = [
   },
 ];
 
-const DATASET = {
+const FIXTURES = {
   accounts: [], contentItems: [], snapshots: [], traffic: [],
   leads, tasks, recommendations: [], activityEvents,
 };
+
+/** Real records when one is supplied, invented ones otherwise. */
+const DATASET = process.env.MIRROR_DATASET
+  ? JSON.parse(await readFile(process.env.MIRROR_DATASET, 'utf8'))
+  : FIXTURES;
+
+const USING_REAL = Boolean(process.env.MIRROR_DATASET);
+if (USING_REAL) {
+  console.log(
+    `Rendering a supplied dataset: ${DATASET.leads.length} leads, ` +
+      `${DATASET.activityEvents.length} activities, ${DATASET.tasks.length} tasks.\n`,
+  );
+}
 
 const SCREENS = [
   { name: '1-pipeline-board', path: '/pipeline', view: 'board' },
@@ -278,24 +296,28 @@ for (const viewport of VIEWPORTS) {
     if (screen.path === '/pipeline') {
       // textContent runs adjacent nodes together, so a word boundary before
       // "Days" would be looking for one between "touch" and "Days".
-      checks.showsOverdue = body.includes('Overdue');
       checks.showsDueToday = body.includes('Due today');
       checks.showsNotScheduled = body.includes('Not scheduled');
-      checks.showsOnHold = body.includes('On hold');
       checks.noRawUuid = !/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-/i.test(body);
+      if (!USING_REAL) {
+        checks.showsOverdue = body.includes('Overdue');
+        checks.showsOnHold = body.includes('On hold');
+      }
     }
     if (screen.name === '2-pipeline-table') {
       checks.hasDaysSinceColumn = body.includes('Days since');
       checks.hasLastTouchColumn = body.includes('Last touch');
       checks.hasFollowUpStatusColumn = body.includes('Follow-up status');
-      // The lead whose last touch is a logged activity, 11 days before today.
-      checks.showsDerivedLastTouch = body.includes('Sep 24, 2026');
-      // The lead whose date came from the import with no event behind it.
+      // A date that came from an import with no event behind it says so.
       checks.labelsReportedTouch = body.includes('Reported, no activity logged');
-      // And the one with nothing recorded says so rather than showing a zero.
+      // And a lead with nothing recorded says so rather than showing a zero.
       checks.saysNotKnown = body.includes('Not known');
+      if (!USING_REAL) {
+        // The fixture lead whose last touch is a logged activity.
+        checks.showsDerivedLastTouch = body.includes('Sep 24, 2026');
+      }
     }
-    if (screen.path === '/') {
+    if (screen.path === '/' && !USING_REAL) {
       checks.listsOverdueLead = body.includes('Ernesto Gil');
       checks.listsDueTodayLead = body.includes('Ariel');
       checks.hidesHeldLead = !body.includes('On The Brew');
