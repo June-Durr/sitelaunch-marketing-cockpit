@@ -23,9 +23,11 @@ import { DataImport } from '../screens/DataImport';
 import { Pipeline } from '../screens/Pipeline';
 import { Today } from '../screens/Today';
 import { buildSeedDataset } from '../data/seed';
-import { EMPTY_DATASET, type LeadMirrorOutcome, type LeadMirrorStatus } from '../data/repository';
+import {
+  EMPTY_DATASET, type CalendarStatus, type LeadMirrorOutcome, type LeadMirrorStatus,
+} from '../data/repository';
 import type { Dataset } from '../types/domain';
-import { makeActivity, makeLead } from './fixtures';
+import { makeActivity, makeLead, makeTask } from './fixtures';
 
 /* ------------------------------------------------------------- fixtures -- */
 
@@ -91,6 +93,8 @@ function supabaseContext(options: {
   status?: LeadMirrorStatus | null;
   trigger?: DataContextValue['triggerLeadMirror'];
   mirrorError?: string;
+  calendar?: CalendarStatus;
+  calendarSync?: DataContextValue['triggerCalendarSync'];
 }): DataContextValue {
   const unused = () => {
     throw new Error('these tests do not write');
@@ -116,16 +120,25 @@ function supabaseContext(options: {
       return options.status ?? mirrorStatus();
     },
     triggerLeadMirror: options.trigger ?? (async () => outcome()),
+    loadCalendar: options.calendar ? async () => options.calendar as CalendarStatus : null,
+    triggerCalendarSync: options.calendarSync ?? null,
   };
 }
 
-function renderWith(value: DataContextValue, path: string, element: ReactNode) {
+function renderWith(
+  value: DataContextValue,
+  path: string,
+  element: ReactNode,
+  // The route to match on, when the address carries a query string the route
+  // pattern must not contain.
+  routePath = path,
+) {
   return render(
     <DataContext.Provider value={value}>
       <MemoryRouter initialEntries={[path]}>
         <Routes>
           <Route element={<AppShell />}>
-            <Route path={path} element={element} />
+            <Route path={routePath} element={element} />
           </Route>
         </Routes>
       </MemoryRouter>
@@ -558,6 +571,8 @@ function pipelineData(): Dataset {
       makeLead({
         id: 'ernesto',
         prospect_name: 'Ernesto Gil',
+        organization: 'Independent / restaurant design',
+        preferred_channel: 'LinkedIn',
         stage: 'follow_up',
         next_action: 'Send a concise follow-up or archive',
         next_action_date: '2026-09-15',
@@ -570,6 +585,13 @@ function pipelineData(): Dataset {
         activity_type: 'follow_up_sent',
         title: 'Follow-up sent',
         occurred_at: '2026-09-24T12:00:00.000Z',
+      }),
+      makeActivity({
+        id: 'touch-2',
+        lead_id: 'ernesto',
+        activity_type: 'follow_up_sent',
+        title: 'Follow-up sent',
+        occurred_at: '2026-09-08T12:00:00.000Z',
       }),
     ],
   };
@@ -654,31 +676,117 @@ describe('the Pipeline shows how long somebody has been waiting', () => {
 
 /* ============================================================= the today == */
 
-describe('Today surfaces the people who are actually waiting', () => {
+describe('Today has one follow-up queue, not two', () => {
   pinTheClock();
 
-  it('lists the overdue lead with how long it has been', async () => {
-    renderWith(supabaseContext({ data: pipelineData() }), '/', <Today key="t" />);
+  const openToday = async (data: Dataset = pipelineData()) => {
+    renderWith(supabaseContext({ data }), '/', <Today key="t" />);
     await waitFor(() => expect(screen.getByRole('heading', { level: 1 })).toBeTruthy());
+  };
 
-    const section = screen
-      .getByText('Leads requiring action')
-      .closest('section') as HTMLElement;
+  const queueSection = () =>
+    screen.getByText('Follow-ups to make').closest('section') as HTMLElement;
+
+  it('has exactly one follow-up section, under one name', async () => {
+    /**
+     * The duplication this replaced.
+     *
+     * There used to be a "Follow-ups due" section built from tasks and a "Leads
+     * requiring action" section built from calculated lead state. Once every
+     * eligible lead has a task those listed the same people twice, which makes a
+     * daily list that is read in a hurry actively misleading about how much there
+     * is to do.
+     */
+    await openToday();
+
+    expect(screen.getAllByText('Follow-ups to make')).toHaveLength(1);
+    expect(screen.queryByText('Follow-ups due')).toBeNull();
+    expect(screen.queryByText('Leads requiring action')).toBeNull();
+
+    // And nobody is listed twice within the queue itself. The recommended next
+    // step above it may well name the same person, which is a different thing
+    // being said once rather than the same list printed twice.
+    const rows = within(queueSection()).getAllByRole('listitem');
+    const names = rows.map((row) => row.querySelector('.queue-title')?.textContent);
+    expect(names).toEqual([...new Set(names)]);
+    expect(names).toContain('Ernesto Gil');
+  });
+
+  it('lists whoever is due now, with how long they have waited', async () => {
+    await openToday();
+    const section = queueSection();
 
     expect(within(section).getByText('Ernesto Gil')).toBeTruthy();
     expect(section.textContent).toContain('Overdue');
+    expect(section.textContent).toContain('days since the last touch');
   });
 
-  it('leaves out the lead deliberately set to no follow-up', async () => {
-    renderWith(supabaseContext({ data: pipelineData() }), '/', <Today key="t" />);
-    await waitFor(() => expect(screen.getByRole('heading', { level: 1 })).toBeTruthy());
+  it('shows the organization, the channel and the recorded next action', async () => {
+    await openToday();
+    const section = queueSection();
 
-    const section = screen
-      .getByText('Leads requiring action')
-      .closest('section') as HTMLElement;
+    expect(section.textContent).toContain('Independent / restaurant design');
+    expect(section.textContent).toContain('LinkedIn');
+    expect(section.textContent).toContain('Send a concise follow-up or archive');
+  });
+
+  it('says what the calendar knows, and says so honestly when it knows nothing', async () => {
+    await openToday();
+    const section = queueSection();
+    // No tasks in this fixture, so nothing could have been put on a calendar.
+    expect(within(section).getAllByText('Not on a calendar').length).toBeGreaterThan(0);
+  });
+
+  it('reports a follow-up that is already on the calendar', async () => {
+    const data = pipelineData();
+    const withTask: Dataset = {
+      ...data,
+      tasks: [
+        makeTask({
+          id: 'task-ernesto',
+          lead_id: 'ernesto',
+          task_type: 'follow_up',
+          status: 'open',
+          due_date: '2026-09-15',
+          follow_up_rule_managed: true,
+          calendar_sync_status: 'synced',
+          external_calendar_id: 'cal',
+          external_event_id: 'evt',
+        }),
+      ],
+    };
+    await openToday(withTask);
+
+    expect(within(queueSection()).getByText('On the calendar')).toBeTruthy();
+  });
+
+  it('reports a calendar failure as a failure', async () => {
+    const data = pipelineData();
+    const withTask: Dataset = {
+      ...data,
+      tasks: [
+        makeTask({
+          id: 'task-ernesto',
+          lead_id: 'ernesto',
+          task_type: 'follow_up',
+          status: 'open',
+          due_date: '2026-09-15',
+          follow_up_rule_managed: true,
+          calendar_sync_status: 'error',
+          sync_error: 'Google Calendar insert failed (HTTP 403)',
+        }),
+      ],
+    };
+    await openToday(withTask);
+
+    expect(within(queueSection()).getByText('Calendar sync failed')).toBeTruthy();
+  });
+
+  it('leaves out the people who are deliberately not being chased', async () => {
+    await openToday();
+    const section = queueSection();
 
     expect(within(section).queryByText('Name pending')).toBeNull();
-    // Nor the one scheduled for November.
     expect(within(section).queryByText('Tyson Harvey')).toBeNull();
   });
 
@@ -695,14 +803,112 @@ describe('Today surfaces the people who are actually waiting', () => {
         }),
       ],
     };
-    renderWith(supabaseContext({ data: held }), '/', <Today key="t" />);
-    await waitFor(() => expect(screen.getByRole('heading', { level: 1 })).toBeTruthy());
-
-    const section = screen
-      .getByText('Leads requiring action')
-      .closest('section') as HTMLElement;
+    await openToday(held);
+    const section = queueSection();
 
     expect(within(section).queryByText('On The Brew')).toBeNull();
     expect(section.textContent).toContain('deliberately on hold');
+  });
+
+  it('keeps what is coming up out of the way until it is asked for', async () => {
+    await openToday();
+    const section = queueSection();
+
+    // Tyson is scheduled for November, so he is not in the default view.
+    expect(within(section).queryByText('Tyson Harvey')).toBeNull();
+
+    const reveal = within(section).getByRole('button', { name: /Show \d+ coming up/ });
+    fireEvent.click(reveal);
+
+    await waitFor(() =>
+      expect(within(queueSection()).getByText('Tyson Harvey')).toBeTruthy(),
+    );
+    // And it can be put away again.
+    fireEvent.click(
+      within(queueSection()).getByRole('button', { name: /Hide the ones that are not due yet/ }),
+    );
+    await waitFor(() =>
+      expect(within(queueSection()).queryByText('Tyson Harvey')).toBeNull(),
+    );
+  });
+
+  it('never offers to record contact just because a link was opened', async () => {
+    // Tapping through to an email client is not evidence a message was sent.
+    await openToday();
+    const section = queueSection();
+
+    expect(within(section).queryByRole('button', { name: /mark.*contact/i })).toBeNull();
+    expect(within(section).queryByRole('link', { name: /^mailto:/ })).toBeNull();
+    expect(section.textContent).toContain('not recorded as contact');
+  });
+
+  it('links to the one person rather than to the pipeline in general', async () => {
+    await openToday();
+    const open = within(queueSection()).getByRole('link', { name: /Open Ernesto Gil/ });
+    expect(open.getAttribute('href')).toBe('/pipeline?lead=ernesto');
+  });
+});
+
+/* ========================================================== the pipeline == */
+
+describe('the Pipeline action queue', () => {
+  pinTheClock();
+
+  const openPipeline = async (path = '/pipeline', data: Dataset = pipelineData()) => {
+    renderWith(supabaseContext({ data }), path, <Pipeline key="p" />, '/pipeline');
+    await waitFor(() => expect(screen.getByRole('heading', { level: 1 })).toBeTruthy());
+  };
+
+  it('is offered alongside Board and Table, not instead of them', async () => {
+    await openPipeline();
+    expect(screen.getByRole('button', { name: 'Action queue' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Board' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Table' })).toBeTruthy();
+  });
+
+  it('puts whoever is due now above whoever is due later', async () => {
+    await openPipeline();
+    fireEvent.click(screen.getByRole('button', { name: 'Action queue' }));
+
+    await waitFor(() => expect(screen.getByText('Do these now (1)')).toBeTruthy());
+    const body = document.body.textContent ?? '';
+    expect(body.indexOf('Do these now')).toBeLessThan(body.indexOf('Due within'));
+    expect(body.indexOf('Due within')).toBeLessThan(body.indexOf('Later'));
+  });
+
+  it('keeps the ones nobody is chasing collapsed below', async () => {
+    await openPipeline();
+    fireEvent.click(screen.getByRole('button', { name: 'Action queue' }));
+
+    await waitFor(() => expect(screen.getByText(/Not being chased/)).toBeTruthy());
+    // Collapsed, so the person set to no follow-up is not on screen yet.
+    expect(screen.queryByText('Name pending')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show them' }));
+    await waitFor(() => expect(screen.getByText('Name pending')).toBeTruthy());
+  });
+
+  it('says honestly where a last touch came from', async () => {
+    await openPipeline();
+    fireEvent.click(screen.getByRole('button', { name: 'Action queue' }));
+
+    await waitFor(() => expect(screen.getByText('Do these now (1)')).toBeTruthy());
+    // Ernesto's touch is a logged activity, so it is not labelled as reported.
+    const body = document.body.textContent ?? '';
+    expect(body).toContain('days since the last touch');
+  });
+
+  it('opens the requested lead when something deep-links to it', async () => {
+    await openPipeline('/pipeline?lead=taylor');
+
+    // The drawer for that exact person, not the list.
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { name: 'Taylor' })).toBeTruthy(),
+    );
+  });
+
+  it('ignores a lead id that is not in the pipeline rather than breaking', async () => {
+    await openPipeline('/pipeline?lead=does-not-exist');
+    expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Pipeline');
   });
 });

@@ -39,3 +39,26 @@ export function blankTouchFields(): {
 } {
   return { external_source: null, channel: null, evidence_source: null };
 }
+
+/**
+ * The calendar fields a task gets when the follow-up rule creates or moves it.
+ *
+ * pending, not not_synced: the rule has just decided a date, and the calendar
+ * does not know about it yet. not_synced would mean "this was never meant to go
+ * out", which is a different statement and would make the calendar sync skip it.
+ */
+export function pendingCalendarSync(): {
+  external_calendar_id: string | null;
+  external_event_id: string | null;
+  calendar_sync_status: CalendarSyncStatus;
+  last_synced_at: string | null;
+  sync_error: string | null;
+} {
+  return {
+    external_calendar_id: null,
+    external_event_id: null,
+    calendar_sync_status: 'pending',
+    last_synced_at: null,
+    sync_error: null,
+  };
+}

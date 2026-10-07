@@ -23,13 +23,15 @@ import { coerceSettings, DEFAULT_SETTINGS, type AppSettings } from '../data/sett
 
 export const BACKUP_FORMAT = 'sitelaunch-marketing-cockpit-backup';
 /**
- * 3 added the relationship follow-up columns.
+ * 3 added the relationship follow-up columns, 4 added the recurring task flag.
  *
  * leads gained an external key, the mirror's own labels, a follow-up mode and a
  * reported last-touch date; activity_events gained a channel, an evidence source
- * and an external source. See supabase/migrations/0007_lead_mirror.sql.
+ * and an external source. See supabase/migrations/0007_lead_mirror.sql. Then
+ * tasks gained follow_up_rule_managed, which says whether the follow-up rule owns
+ * that task. See supabase/migrations/0009_follow_up_tasks.sql.
  */
-export const BACKUP_SCHEMA_VERSION = 3;
+export const BACKUP_SCHEMA_VERSION = 4;
 
 /**
  * Which schema version each table first appeared in.
@@ -82,6 +84,9 @@ export const FIELD_ADDED_IN: Partial<Record<TableName, Record<string, number>>> 
     channel: 3,
     evidence_source: 3,
   },
+  tasks: {
+    follow_up_rule_managed: 4,
+  },
 };
 
 export const FIELD_DEFAULTS: Partial<Record<TableName, Record<string, unknown>>> = {
@@ -99,6 +104,11 @@ export const FIELD_DEFAULTS: Partial<Record<TableName, Record<string, unknown>>>
     external_source: null,
     channel: null,
     evidence_source: null,
+  },
+  tasks: {
+    // False, not true: a task written before the rule existed was somebody's
+    // own, and claiming ownership of it would let reconciliation reword it.
+    follow_up_rule_managed: false,
   },
 };
 
@@ -240,7 +250,7 @@ const SPECS: Record<TableName, TableSpec> = {
   tasks: {
     requiredStrings: ['title', 'due_date'],
     numerics: [],
-    booleans: ['is_seed'],
+    booleans: ['is_seed', 'follow_up_rule_managed'],
     enums: {
       task_type: keysOf(TASK_TYPE_LABELS),
       status: ['open', 'done', 'skipped'],

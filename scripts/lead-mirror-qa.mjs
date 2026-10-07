@@ -208,10 +208,11 @@ if (USING_REAL) {
 }
 
 const SCREENS = [
-  { name: '1-pipeline-board', path: '/pipeline', view: 'board' },
-  { name: '2-pipeline-table', path: '/pipeline', view: 'table' },
-  { name: '3-today', path: '/' },
-  { name: '4-data-and-import', path: '/data' },
+  { name: '1-pipeline-action-queue', path: '/pipeline', view: 'Action queue' },
+  { name: '2-pipeline-board', path: '/pipeline', view: 'Board' },
+  { name: '3-pipeline-table', path: '/pipeline', view: 'Table' },
+  { name: '4-today', path: '/' },
+  { name: '5-data-and-import', path: '/data' },
 ];
 
 /** Elements sticking out past the viewport, and the page's own scroll width. */
@@ -275,9 +276,8 @@ for (const viewport of VIEWPORTS) {
     await page.waitForSelector('h1', { timeout: 15_000 });
 
     if (screen.view) {
-      const label = screen.view === 'board' ? 'Board' : 'Table';
-      await page.getByRole('button', { name: label, exact: true }).click();
-      await page.waitForTimeout(150);
+      await page.getByRole('button', { name: screen.view, exact: true }).click();
+      await page.waitForTimeout(200);
     }
 
     await page.evaluate(() => document.fonts.ready);
@@ -297,14 +297,25 @@ for (const viewport of VIEWPORTS) {
       // textContent runs adjacent nodes together, so a word boundary before
       // "Days" would be looking for one between "touch" and "Days".
       checks.showsDueToday = body.includes('Due today');
-      checks.showsNotScheduled = body.includes('Not scheduled');
       checks.noRawUuid = !/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-/i.test(body);
       if (!USING_REAL) {
         checks.showsOverdue = body.includes('Overdue');
         checks.showsOnHold = body.includes('On hold');
       }
     }
-    if (screen.name === '2-pipeline-table') {
+    if (screen.name === '1-pipeline-action-queue') {
+      checks.hasDoNowGroup = /Do these now/.test(body);
+      checks.hasDueWithinGroup = /Due within \d+ days/.test(body);
+      checks.hasLaterGroup = body.includes('Later');
+      // The ones nobody is chasing are collapsed, not scrolled past.
+      checks.collapsesResting = /Not being chased/.test(body);
+      checks.saysDaysWaited =
+        body.includes('since the last touch') || body.includes('No contact on record');
+    }
+    if (screen.name === '3-pipeline-table') {
+      // Only the table shows every lead at once, so this is where the
+      // deliberately unscheduled ones are visible without expanding anything.
+      checks.showsNotScheduled = body.includes('Not scheduled');
       checks.hasDaysSinceColumn = body.includes('Days since');
       checks.hasLastTouchColumn = body.includes('Last touch');
       checks.hasFollowUpStatusColumn = body.includes('Follow-up status');
@@ -317,16 +328,26 @@ for (const viewport of VIEWPORTS) {
         checks.showsDerivedLastTouch = body.includes('Sep 24, 2026');
       }
     }
+    if (screen.path === '/') {
+      // One queue, under one name, never the two it replaced.
+      checks.hasOneFollowUpQueue =
+        body.includes('Follow-ups to make')
+        && !body.includes('Follow-ups due')
+        && !body.includes('Leads requiring action');
+    }
     if (screen.path === '/' && !USING_REAL) {
       checks.listsOverdueLead = body.includes('Ernesto Gil');
       checks.listsDueTodayLead = body.includes('Ariel');
       checks.hidesHeldLead = !body.includes('On The Brew');
       checks.hidesArchivedLead = !body.includes('Moha Alec');
-      checks.hidesScheduledLead = !body.includes('Tyson Harvey');
       checks.showsDaysWaiting = body.includes('days since the last touch');
     }
     if (screen.path === '/data') {
       checks.hasMirrorPanel = body.includes('Google Sheet lead mirror');
+      checks.hasCalendarPanel = body.includes('Follow-up calendar');
+      // Calendar has its own panel now, so it must not also sit in the
+      // "still to come" table claiming to be unset.
+      checks.calendarNotInRemaining = !/Remaining integrations[\s\S]*Google Calendar/.test(body);
     }
 
     report.push({

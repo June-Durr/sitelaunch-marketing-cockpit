@@ -153,6 +153,9 @@ function supabaseContext(status: AnalyticsStatus): DataContextValue {
     // analytics panel, so it is wired as unavailable rather than stubbed.
     loadLeadMirror: null,
     triggerLeadMirror: null,
+    // The calendar has its own panel and its own tests.
+    loadCalendar: null,
+    triggerCalendarSync: null,
     triggerSync: async () => ({ ok: true, status: 'succeeded', rowsWritten: 0, error: null }),
   };
 }
@@ -296,9 +299,24 @@ describe('connected Google analytics are reported once, by GoogleSyncPanel', () 
     renderSupabase('/data', <DataImport key="d" />);
     await waitFor(() => expect(screen.getByText('Remaining integrations')).toBeTruthy());
 
-    // Six are left once the two syncing providers come out of the list.
-    expect(headFor('Remaining integrations').textContent).toMatch(/none of these 6 yet/);
-    expect(sectionFor('Remaining integrations').querySelectorAll('tbody tr')).toHaveLength(6);
+    // Five are left: the four that sync themselves have their own panels now,
+    // and listing them here as well would give two answers to one question.
+    expect(headFor('Remaining integrations').textContent).toMatch(/none of these 5 yet/);
+    expect(sectionFor('Remaining integrations').querySelectorAll('tbody tr')).toHaveLength(5);
+  });
+
+  it('no longer reports Google Calendar as not set up', async () => {
+    /**
+     * Calendar has its own panel, which reports what it has actually done. Left
+     * in this table it would permanently read "Not set up" next to a panel
+     * saying it was connected, and the table would be the one people believed.
+     */
+    renderSupabase('/data', <DataImport key="d" />);
+    await waitFor(() => expect(screen.getByText('Remaining integrations')).toBeTruthy());
+
+    const remaining = sectionFor('Remaining integrations');
+    expect(remaining.textContent).not.toContain('Google Calendar');
+    expect(screen.getByText('Follow-up calendar')).toBeTruthy();
   });
 
   it('keeps the manual CSV importer, labelled as the fallback it is', async () => {
@@ -312,12 +330,14 @@ describe('connected Google analytics are reported once, by GoogleSyncPanel', () 
     expect(section.textContent).toMatch(/never fills a gap with a zero/);
   });
 
-  it('explains the exclusion by pointing at the panel that does report them', async () => {
+  it('explains the exclusion by pointing at the panels that do report them', async () => {
     renderSupabase('/data', <DataImport key="d" />);
     await waitFor(() => expect(screen.getByText('Remaining integrations')).toBeTruthy());
 
-    expect(sectionFor('Remaining integrations').textContent).toMatch(
-      /They are connected and syncing, and Automatic analytics above reports/,
+    const remaining = sectionFor('Remaining integrations');
+    expect(remaining.textContent).toMatch(/Each has its own panel above/);
+    expect(remaining.textContent).toMatch(
+      /the Sheet mirror and the follow-up calendar are\s*not in this list on purpose/,
     );
   });
 });
@@ -498,7 +518,9 @@ describe('browser-only mode still describes itself honestly', () => {
     const remaining = sectionFor('Remaining integrations');
     expect(remaining.textContent).toMatch(/Supabase comes first/);
     expect(within(remaining).queryByText('Google Analytics')).toBeNull();
-    expect(remaining.querySelectorAll('tbody tr')).toHaveLength(6);
+    // The four that sync themselves have their own panels, here and in Supabase
+    // mode alike, so this table is the same five either way.
+    expect(remaining.querySelectorAll('tbody tr')).toHaveLength(5);
   });
 
   it('does not claim Google is connected and syncing while explaining its absence', async () => {
@@ -508,7 +530,7 @@ describe('browser-only mode still describes itself honestly', () => {
     // The reason GA4 and Search Console are left out of this table has to hold in
     // browser-only mode too, where they are not connected to anything.
     const remaining = sectionFor('Remaining integrations');
-    expect(remaining.textContent).not.toMatch(/They are connected and syncing/);
+    expect(remaining.textContent).not.toMatch(/connected and syncing/);
     expect(remaining.textContent).toMatch(/nothing to report yet/);
   });
 

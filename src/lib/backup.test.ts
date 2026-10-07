@@ -16,7 +16,7 @@ import {
   BACKUP_FORMAT, BACKUP_SCHEMA_VERSION, buildBackup, parseAndValidate,
   serializeBackup, validateBackup,
 } from './backup';
-import { newActivity, newLead } from '../test/fixtures';
+import { newActivity, newLead, newTask } from '../test/fixtures';
 
 /** A structurally valid backup object, ready to be broken in specific ways. */
 function validBackupObject(): Record<string, unknown> {
@@ -104,14 +104,14 @@ describe('export -> clear -> import recovers the dataset exactly', () => {
       details: 'Three conversations worth following up',
       lead_id: lead.id,
     }));
-    await repo.insert('tasks', {
+    await repo.insert('tasks', newTask({
       content_item_id: null, lead_id: lead.id, title: 'Call Rivera',
       task_type: 'follow_up', status: 'open', due_date: '2026-09-18',
       window_type: null, notes: null, completed_at: null,
       external_calendar_id: null, external_event_id: null,
       calendar_sync_status: 'not_synced', last_synced_at: null, sync_error: null,
       is_seed: false,
-    });
+    }));
 
     const original = await repo.loadAll();
     writeSettings({ ...DEFAULT_SETTINGS, pipelineView: 'table', showCompletedTasks: true });

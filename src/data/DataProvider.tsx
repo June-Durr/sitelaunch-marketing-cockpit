@@ -121,6 +121,18 @@ export function DataProvider({ children }: { children: ReactNode }) {
             return outcome;
           }
         : null,
+      loadCalendar: repo.loadCalendar ? () => repo.loadCalendar!() : null,
+      /**
+       * Refreshes afterwards, because a calendar sync writes the sync state onto
+       * the tasks the screens are showing.
+       */
+      triggerCalendarSync: repo.triggerCalendarSync
+        ? async () => {
+            const outcome = await repo.triggerCalendarSync!();
+            await refresh();
+            return outcome;
+          }
+        : null,
     }),
     [data, error, loading, refresh, repo],
   );

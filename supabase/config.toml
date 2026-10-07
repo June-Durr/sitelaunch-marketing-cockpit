@@ -25,3 +25,9 @@ verify_jwt = false
 # Authorization header at all, and resolveCaller is what tells those apart.
 [functions.sync-lead-mirror]
 verify_jwt = false
+
+# The calendar sync, for the same reason. It is called by a person pressing Sync
+# now with their own session, and on a schedule with the shared secret and no
+# Authorization header at all.
+[functions.sync-calendar]
+verify_jwt = false

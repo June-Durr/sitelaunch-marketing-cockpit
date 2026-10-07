@@ -1,4 +1,4 @@
-import { Suspense, lazy } from 'react';
+import { Suspense, lazy, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useData } from '../data/context';
 import { Empty, PageHead, Section, Stat, Tag } from '../components/primitives';
@@ -19,8 +19,9 @@ import {
 } from '../lib/dates';
 import { isInProgram, programPosition } from '../config/program';
 import {
-  FOLLOW_UP_STATUS_LABELS, FOLLOW_UP_STATUS_TONES, needsActionToday,
+  DUE_SOON_DAYS, NEEDS_ACTION_STATUSES, followUpStates,
 } from '../config/followUp';
+import { FollowUpQueue } from '../components/FollowUpQueue';
 import { readSettings } from '../data/settings';
 import { formatCurrency } from '../lib/format';
 import { aggregate } from '../lib/metrics';
@@ -44,22 +45,28 @@ export function Today() {
       t.due_date <= now,
   );
 
-  const followUps = openTasks
-    .filter((t) => t.task_type === 'follow_up' && t.due_date <= now)
-    .sort((a, b) => a.due_date.localeCompare(b.due_date));
-
   const measurementDue = findMeasurementGaps(data, now);
 
   /**
-   * Who is waiting on you today, decided in one place.
+   * The one follow-up queue, in the order it should be worked.
    *
-   * src/config/followUp.ts owns this. It is not a date comparison inlined here,
-   * because the answer depends on more than the date: a lead deliberately on
-   * hold, archived or set to no follow-up is not waiting on anybody, and a date
-   * left behind on one of those is not a reason to nag. Overdue comes first,
-   * then today, and within each the person who has waited longest.
+   * There used to be two sections here: one built from follow-up tasks and one
+   * built from calculated lead state. Once every eligible lead has a task they
+   * listed the same seven people twice, so they are one section now, and its
+   * membership comes from the calculated state rather than from the tasks. The
+   * task is the thing that gets done; the lead state is what decides whether it
+   * is due, which is why it is the one that orders this list.
+   *
+   * No date arithmetic happens on this screen. followUpStates already sorted
+   * these worst first, and within a status by whoever has waited longest.
    */
-  const leadsNeedingAction = needsActionToday(data.leads, data.activityEvents, now);
+  const queue = followUpStates(data.leads, data.activityEvents, now);
+
+  const dueNow = queue.filter((s) => NEEDS_ACTION_STATUSES.includes(s.status));
+  const upcoming = queue.filter(
+    (s) => s.status === 'due_soon' || s.status === 'scheduled',
+  );
+  const [showUpcoming, setShowUpcoming] = useState(false);
 
   /* -------------------------------------------------- program progress --- */
 
@@ -207,28 +214,6 @@ export function Today() {
         )}
       </Section>
 
-      <Section title="Follow-ups due" note={`${followUps.length}`}>
-        {followUps.length === 0 ? (
-          <p className="field-hint">Nobody needs chasing today.</p>
-        ) : (
-          <ul className="queue">
-            {followUps.map((task) => (
-              <li key={task.id}>
-                <div className="queue-main">
-                  <div className="queue-title">{task.title}</div>
-                  <div className="queue-meta">{task.notes ?? 'No note'}</div>
-                </div>
-                <div className="queue-side">
-                  <span className={task.due_date < now ? 'due-overdue' : 'due-today'}>
-                    {relativeDue(task.due_date, now)}
-                  </span>
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
-      </Section>
-
       <Section
         title="Awaiting measurement"
         note={`${measurementDue.length} overdue`}
@@ -270,47 +255,61 @@ export function Today() {
         )}
       </Section>
 
-      <Section title="Leads requiring action" note={`${leadsNeedingAction.length}`}>
-        {leadsNeedingAction.length === 0 ? (
-          <p className="field-hint">
-            Nobody is past their follow-up date. People deliberately on hold, archived or
-            set to no follow-up are not counted here, which is the point of setting them
-            that way.
-          </p>
-        ) : (
-          <ul className="queue">
-            {leadsNeedingAction.map(({ lead, daysSince, status }) => (
-              <li key={lead.id}>
-                <div className="queue-main">
-                  <div className="queue-title">{lead.prospect_name}</div>
-                  <div className="queue-meta">
-                    {lead.next_action ?? 'No next action recorded'}
-                    {lead.proposed_value !== null
-                      ? ` · ${formatCurrency(lead.proposed_value)} proposed`
-                      : ''}
-                  </div>
-                  <div className="queue-meta">
-                    {/* The number that actually matters: how long they have waited. */}
-                    {daysSince === null
-                      ? 'No contact on record'
-                      : `${daysSince} ${daysSince === 1 ? 'day' : 'days'} since the last touch`}
-                  </div>
-                </div>
-                <div className="queue-side">
-                  <Tag tone={FOLLOW_UP_STATUS_TONES[status]}>
-                    {FOLLOW_UP_STATUS_LABELS[status]}
-                  </Tag>
-                  <span className={status === 'overdue' ? 'due-overdue' : 'due-today'}>
-                    {relativeDue(lead.next_action_date as string, now)}
-                  </span>
-                  <Link className="btn btn-quiet" to="/pipeline">
-                    Open
-                  </Link>
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
+      <Section
+        title="Follow-ups to make"
+        note={`${dueNow.length} due now`}
+        action={
+          upcoming.length > 0 ? (
+            <button
+              className="section-note"
+              style={{ background: 'none', border: 0, cursor: 'pointer', padding: 0 }}
+              onClick={() => setShowUpcoming((on) => !on)}
+            >
+              {showUpcoming
+                ? 'Hide the ones that are not due yet'
+                : `Show ${upcoming.length} coming up`}
+            </button>
+          ) : null
+        }
+      >
+        <FollowUpQueue
+          states={dueNow}
+          tasks={data.tasks}
+          now={now}
+          emptyMessage={
+            <>
+              Nobody is due a follow-up today. People deliberately on hold, archived or
+              set to no follow-up are not counted here, which is the point of setting
+              them that way.
+            </>
+          }
+        />
+
+        {showUpcoming && upcoming.length > 0 ? (
+          <>
+            <div className="fieldset-legend">Coming up</div>
+            <p className="field-hint" style={{ marginTop: 0 }}>
+              Due soon means within {DUE_SOON_DAYS} days. These are here so you can see
+              what the week looks like, not because they need doing now.
+            </p>
+            <FollowUpQueue
+              states={upcoming}
+              tasks={data.tasks}
+              now={now}
+              emptyMessage="Nothing scheduled."
+            />
+          </>
+        ) : null}
+
+        <p className="notice">
+          This is the one follow-up list. It used to be two, one built from tasks and one
+          from the leads themselves, which listed the same people twice over. Who is on it
+          and in what order comes from the follow-up rules, and every row carries the one
+          number that decides whether to act: how long that person has been waiting.
+          Opening an email or a phone link is not recorded as contact, because tapping a
+          link is not evidence that anything was sent. Log it on the Activity screen, or
+          finish the task, and the next follow-up moves itself.
+        </p>
       </Section>
 
       <Section

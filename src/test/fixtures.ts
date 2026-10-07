@@ -76,6 +76,10 @@ export function makeTask(over: Partial<Task> = {}): Task {
     window_type: null,
     notes: null,
     completed_at: null,
+    // A task is somebody's own until the follow-up rule says otherwise, so the
+    // default here matches the column default rather than the common case in
+    // any one test.
+    follow_up_rule_managed: false,
     ...blankCalendarSync(),
     is_seed: false,
     created_at: FIXTURE_TIME,
@@ -126,4 +130,73 @@ export function newActivity(
 export function newTask(over: Partial<Task> = {}): Omit<Task, 'id' | 'created_at' | 'updated_at'> {
   const { id: _id, created_at: _c, updated_at: _u, ...rest } = makeTask(over);
   return rest;
+}
+
+/* ------------------------------------------------------------------------- */
+
+/**
+ * A pipeline shaped like the one the mirror import produced: 21 relationships,
+ * of which 19 are followed up and 2 are deliberately left alone.
+ *
+ * Invented people, fixed dates. It exists so the follow-up reconciliation can be
+ * tested against the same *shape* as the real data without any real data being
+ * copied into the repository. The two excluded leads are the interesting part:
+ * one is set to no follow-up on purpose and one is on hold, which are the two
+ * ways a real lead opts out, and neither should ever receive a task.
+ */
+export function twentyOneLeads(): Lead[] {
+  const stages: LeadStage[] = [
+    'follow_up', 'waiting', 'new_contact', 'qualified', 'proposal', 'call_scheduled',
+  ];
+
+  // 19 that the rule follows up, with a spread of stages and dates.
+  const followed = Array.from({ length: 19 }, (_, i) =>
+    makeLead({
+      id: `lead-${String(i + 1).padStart(2, '0')}`,
+      external_key: `relationship-${String(i + 1).padStart(2, '0')}`,
+      external_source: 'google_sheets',
+      prospect_name: `Prospect ${i + 1}`,
+      organization: i % 3 === 0 ? null : `Organization ${i + 1}`,
+      stage: stages[i % stages.length],
+      follow_up_mode: 'auto',
+      // Spread across overdue, today and the next fortnight.
+      next_action_date: addFixtureDays('2026-10-01', i),
+      next_action: i % 4 === 0 ? null : `Send the ${i + 1} follow-up`,
+      preferred_channel: i % 2 === 0 ? 'Email' : 'Phone',
+      reported_last_touch_at: addFixtureDays('2026-09-01', i),
+    }),
+  );
+
+  // 2 that opt out, one each way.
+  const excluded = [
+    makeLead({
+      id: 'lead-20',
+      external_key: 'relationship-20',
+      external_source: 'google_sheets',
+      prospect_name: 'Prospect 20',
+      organization: 'Organization 20',
+      stage: 'waiting',
+      follow_up_mode: 'none',
+      next_action: 'No action unless they re-engage',
+    }),
+    makeLead({
+      id: 'lead-21',
+      external_key: 'relationship-21',
+      external_source: 'google_sheets',
+      prospect_name: 'Prospect 21',
+      organization: 'Organization 21',
+      stage: 'waiting',
+      follow_up_mode: 'hold',
+      next_action: 'Hold until they come back',
+    }),
+  ];
+
+  return [...followed, ...excluded];
+}
+
+/** Day arithmetic for the fixtures, so none of them reads a clock. */
+function addFixtureDays(day: string, days: number): string {
+  const date = new Date(`${day}T00:00:00.000Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
 }

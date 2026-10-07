@@ -144,7 +144,7 @@ export const RECOMMENDED_ORDER: IntegrationProvider[] = [
  * than render a second, duller copy of a state that is already on screen.
  */
 export const SYNCING_PROVIDERS: IntegrationProvider[] = [
-  'ga4', 'search_console', 'google_sheets',
+  'ga4', 'search_console', 'google_sheets', 'google_calendar',
 ];
 
 /** RECOMMENDED_ORDER minus the two that already sync. Still in the same order. */
@@ -158,7 +158,9 @@ export const PROVIDER_NOTES: Record<IntegrationProvider, string> = {
   google_sheets:
     'A readable mirror of the pipeline, rewritten from the database. Never read back as truth.',
   website_forms: 'Enquiries from the site, landing straight in the Pipeline.',
-  google_calendar: 'Tasks out to the calendar, events back in as activity.',
+  google_calendar:
+    'Open follow-ups out to a dedicated calendar. Nothing is read back in, because an '
+    + 'appointment is not evidence that business contact happened.',
   instagram: 'Post level numbers, so they stop being typed in by hand.',
   facebook: 'Page level numbers. Stories will stay unavailable whatever happens.',
   linkedin: 'Later. Worth it only if LinkedIn becomes a real channel.',

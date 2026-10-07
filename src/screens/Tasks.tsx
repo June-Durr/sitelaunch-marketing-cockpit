@@ -220,7 +220,10 @@ export function Tasks() {
                 window_type: null,
                 notes: notes.trim() || null,
                 completed_at: null,
-                ...blankCalendarSync(),
+                // Made by hand, so the follow-up rule does not own it and will
+      // never move, reopen or close it.
+      follow_up_rule_managed: false,
+      ...blankCalendarSync(),
                 is_seed: false,
               });
               onClose();

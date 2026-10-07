@@ -8,8 +8,8 @@
 import { DEFAULT_PROGRAM, validateProgram, type ProgramConfig } from '../config/program';
 
 export interface AppSettings {
-  /** Pipeline default view. */
-  pipelineView: 'board' | 'table';
+  /** Pipeline default view. 'queue' is the one ordered by what is actually due. */
+  pipelineView: 'board' | 'table' | 'queue';
   /** Whether the Tasks screen shows the completed list expanded. */
   showCompletedTasks: boolean;
   /**
@@ -20,7 +20,7 @@ export interface AppSettings {
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
-  pipelineView: 'board',
+  pipelineView: 'queue',
   showCompletedTasks: false,
   program: DEFAULT_PROGRAM,
 };
@@ -50,7 +50,10 @@ export function coerceSettings(value: unknown): AppSettings {
   if (!value || typeof value !== 'object') return { ...DEFAULT_SETTINGS };
   const input = value as Partial<AppSettings>;
   return {
-    pipelineView: input.pipelineView === 'table' ? 'table' : 'board',
+    pipelineView:
+      input.pipelineView === 'table' || input.pipelineView === 'board'
+        ? input.pipelineView
+        : 'queue',
     showCompletedTasks: input.showCompletedTasks === true,
     program: coerceProgram(input.program),
   };

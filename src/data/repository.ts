@@ -150,6 +150,31 @@ export interface LeadMirrorStatus {
   runs: SyncRun[];
 }
 
+/* ---------------------------------------------------- the follow-up calendar --- */
+
+/** What the calendar sync reported. Never carries a credential. */
+export interface CalendarSyncOutcome {
+  ok: boolean;
+  /** 'succeeded', 'failed', 'not_configured', or a transport word. */
+  status: string;
+  /** Events newly put on the calendar. */
+  created: number | null;
+  /** Events already there and brought up to date. */
+  updated: number | null;
+  failed: number | null;
+  /** Open follow-up tasks considered. */
+  tasks: number | null;
+  /** Already sanitized server side. Safe to display. */
+  error: string | null;
+}
+
+/** Connection and run history for the calendar alone. */
+export interface CalendarStatus {
+  connection: IntegrationConnection | null;
+  /** Most recent first. */
+  runs: SyncRun[];
+}
+
 /**
  * The single data boundary of the application.
  *
@@ -219,6 +244,20 @@ export interface Repository {
     action: LeadMirrorAction,
     options?: { mode?: ReconcileMode; expect?: { leadRows: number; touchRows: number } },
   ): Promise<LeadMirrorOutcome>;
+  /**
+   * Supabase adapter only: the follow-up calendar's connection and runs.
+   *
+   * Read only. The browser never learns which calendar it is beyond the id the
+   * server recorded, and never holds a Google credential.
+   */
+  loadCalendar?(): Promise<CalendarStatus>;
+  /**
+   * Supabase adapter only: ask the server to put open follow-ups on the calendar.
+   *
+   * A request for work rather than the work itself. The browser sends its own
+   * session and nothing else.
+   */
+  triggerCalendarSync?(): Promise<CalendarSyncOutcome>;
 }
 
 /** A fresh empty dataset. Use this rather than writing the shape out by hand. */

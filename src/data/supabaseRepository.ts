@@ -6,9 +6,10 @@
 
 import type { Dataset } from '../types/domain';
 import type {
-  AnalyticsProvider, AnalyticsStatus, ImportReport, LeadMirrorAction,
-  LeadMirrorOutcome, LeadMirrorStatus, NewRow, ReconcileMode, Repository, RowPatch,
-  SyncMode, SyncTriggerOutcome, TableMap, TableName,
+  AnalyticsProvider, AnalyticsStatus, CalendarStatus, CalendarSyncOutcome,
+  ImportReport, LeadMirrorAction, LeadMirrorOutcome, LeadMirrorStatus, NewRow,
+  ReconcileMode, Repository, RowPatch, SyncMode, SyncTriggerOutcome, TableMap,
+  TableName,
 } from './repository';
 import { IMPORT_ORDER } from './repository';
 import type {
@@ -291,6 +292,79 @@ export function createSupabaseRepository(): Repository {
         ),
       ]);
       return { connection: connections[0] ?? null, runs };
+    },
+
+    /**
+     * The follow-up calendar's own connection row and its last few runs.
+     *
+     * Scoped to this provider, so the panel does not pay for tables it never
+     * shows. A project without migration 0005 applied reports as empty rather
+     * than as an error.
+     */
+    async loadCalendar(): Promise<CalendarStatus> {
+      const [connections, runs] = await Promise.all([
+        selectOptionalWhere<IntegrationConnection>(
+          'integration_connections', 'provider', 'google_calendar', 'updated_at', false, 1,
+        ),
+        selectOptionalWhere<SyncRun>(
+          'sync_runs', 'provider', 'google_calendar', 'started_at', false, 20,
+        ),
+      ]);
+      return { connection: connections[0] ?? null, runs };
+    },
+
+    /**
+     * Ask the server to put the open follow-ups on the calendar.
+     *
+     * Sends this browser's session and nothing else. The Google credential and
+     * the calendar id live in the function's own secrets, so pressing this
+     * button never puts either in a browser.
+     */
+    async triggerCalendarSync(): Promise<CalendarSyncOutcome> {
+      const empty = (status: string, error: string): CalendarSyncOutcome => ({
+        ok: false, status, created: null, updated: null, failed: null, tasks: null, error,
+      });
+
+      const { data: session } = await db.auth.getSession();
+      const token = session.session?.access_token;
+      if (!token) return empty('not_signed_in', 'Sign in first.');
+
+      let response: Response;
+      try {
+        response = await fetch(`${functionsBaseUrl()}/sync-calendar`, {
+          method: 'POST',
+          headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+          body: JSON.stringify({ action: 'export' }),
+        });
+      } catch {
+        return empty(
+          'unreachable',
+          'Could not reach the calendar function. It may not be deployed yet.',
+        );
+      }
+
+      let body: Record<string, unknown> = {};
+      try {
+        body = (await response.json()) as Record<string, unknown>;
+      } catch {
+        body = {};
+      }
+
+      const asNumber = (value: unknown) => (typeof value === 'number' ? value : null);
+      return {
+        ok: response.ok,
+        status:
+          typeof body.status === 'string'
+            ? body.status
+            : response.ok
+              ? 'unknown'
+              : `http_${response.status}`,
+        created: asNumber(body.created),
+        updated: asNumber(body.updated),
+        failed: asNumber(body.failed),
+        tasks: asNumber(body.tasks),
+        error: typeof body.error === 'string' ? body.error : null,
+      };
     },
 
     /**

@@ -17,6 +17,7 @@ is not.
 | 5 | `migrations/0006_analytics_schedule.sql` | pg_cron and pg_net, plus the helper the daily sync schedule calls. Creates no cron job. |
 | 6 | `migrations/0007_lead_mirror.sql` | Relationship follow-up columns, the three uniqueness indexes, and `lead_follow_up_state(as_of)`. Creates no table. |
 | 7 | `migrations/0008_mirror_conflict_target.sql` | Makes the activity external-key index usable as an `ON CONFLICT` target. Same rule, no predicate. |
+| 8 | `migrations/0009_follow_up_tasks.sql` | The recurring follow-up task: a column saying the rule owns it, one per lead, and `reconcile_follow_up_tasks(dry_run)`. Creates no table. |
 
 Migration 0006 starts nothing. It installs what a schedule needs and leaves the two
 `cron.schedule` statements commented at the bottom of the file, to be run by hand once
@@ -173,7 +174,7 @@ property and Search Console site.
 ## Deploying the sync functions
 
 ```
-supabase functions deploy sync-ga4 sync-search-console sync-lead-mirror --use-api
+supabase functions deploy sync-ga4 sync-search-console sync-lead-mirror sync-calendar --use-api
 ```
 
 Both functions must be deployed with JWT verification off. That now comes from
@@ -205,6 +206,7 @@ the platform. These have to be set with `supabase secrets set`:
 | `GA4_PROPERTY_ID` | GA4 property id. Not a secret, but it lives here with the rest. |
 | `SEARCH_CONSOLE_SITE_URL` | The Search Console property, exactly as Google writes it. |
 | `GOOGLE_SHEETS_SPREADSHEET_ID` | The lead mirror spreadsheet. Not a secret either, but it is configuration and belongs in one place rather than in a bundle nobody can rotate. |
+| `GOOGLE_CALENDAR_ID` | The dedicated follow-up calendar. Without it the calendar sync refuses rather than writing to the primary calendar. |
 
 And these two in Vault, read by `trigger_analytics_sync` at call time:
 
@@ -360,3 +362,109 @@ select cron.unschedule('sitelaunch-sync-lead-mirror-daily');
   is replaced by the next sync.
 - It never touches lead or activity data when it fails. The worst case is a
   spreadsheet that is out of date, and the Cockpit carries on.
+
+---
+
+## The follow-up tasks
+
+Migration 0009 turns each lead's calculated follow-up date into a real task, and
+`reconcile_follow_up_tasks(dry_run)` is what keeps them in step.
+
+```
+-- Look. Writes nothing; dry_run is the default.
+select action, count(*) from reconcile_follow_up_tasks(true) group by action;
+
+-- Do it.
+select action, count(*) from reconcile_follow_up_tasks(false) group by action;
+```
+
+Four outcomes, and a lead lands in exactly one: `create`, `update`, `unchanged`,
+or `close`. Running it again over unchanged data reports nothing but `unchanged`
+and writes nothing, which is what makes it safe to schedule.
+
+It is `security invoker`, so row level security decides which leads and tasks a
+caller can see and change. Run through `supabase db query --linked` it executes as
+an admin role, which bypasses RLS: fine on a single-owner project, and worth
+knowing before this becomes multi-tenant.
+
+### What it will not touch
+
+- Any task that is not a follow-up belonging to a lead. Measurement checks,
+  publishing, marketing actions and admin tasks are somebody else's plan.
+- A follow-up task somebody made by hand for a lead the rule has stopped
+  chasing. Only tasks carrying `follow_up_rule_managed` are ever closed.
+- Anything, by deleting it. A lead that stops being followed up has its task
+  marked `skipped`, which is reversible and keeps the history.
+
+The rule is implemented twice, in `src/config/followUpTasks.ts` for the browser
+and in SQL for the server, and `src/test/pg/followUpTasks.test.ts` runs both over
+the same fixtures and fails if they disagree about a single lead.
+
+---
+
+## The follow-up calendar
+
+`supabase/functions/sync-calendar` writes every open follow-up task onto a
+dedicated Google Calendar, as an all day entry. One direction only.
+
+### What it needs
+
+- `GOOGLE_SERVICE_ACCOUNT_KEY`, the same secret everything else already uses. No
+  second credential, and no new JSON key.
+- `GOOGLE_CALENDAR_ID`, set with `supabase secrets set`. Without it the function
+  answers `not_configured` and writes nothing.
+- A calendar made for this, shared with the service account's own address with
+  permission to **make changes to events**.
+- The Google Calendar API enabled on the project.
+
+The scope is `auth/calendar.events`, which is the narrowest one that can write an
+event. The wider `auth/calendar` also grants creating, sharing and deleting whole
+calendars, and nothing here needs that.
+
+### Why a retry cannot double-book
+
+The event id is derived from the task id: the uuid's hex digits with the hyphens
+removed, prefixed `slc`, which is already inside the base32hex alphabet Google
+requires. Creating an event is not atomic from this side, so Google can store it
+and the response can still be lost. A random id would mean the retry created a
+second entry in somebody's week and nothing would notice. With this one the retry
+asks for the same id, Google answers 409, and the sync patches instead.
+
+### What it will never do
+
+- Delete an event. Not when a task is finished, not when a lead is archived, not
+  as a tidy-up. The calendar may be shared, and removing something from somebody
+  else's week is not this app's decision.
+- Write to `primary`. That id is refused outright, so a missing configuration
+  cannot turn into twenty events in a real diary.
+- Clear a task's stored event id when a write fails. The ids stay, so the next
+  successful run updates the event it was always meant to.
+- Read events back in as activity. An appointment is not evidence that business
+  contact happened, and classifying one as outreach would invent history.
+
+### The daily job
+
+Not scheduled by any migration, and deliberately not scheduled until a real
+on-demand sync has succeeded. When it has:
+
+```
+select cron.schedule(
+  'sitelaunch-sync-calendar-daily', '40 8 * * *',
+  $job$
+    select net.http_post(
+      url     := (select decrypted_secret from vault.decrypted_secrets
+                  where name = 'sync_functions_base_url') || '/sync-calendar',
+      headers := jsonb_build_object(
+        'content-type', 'application/json',
+        'x-sync-cron-secret', (select decrypted_secret from vault.decrypted_secrets
+                               where name = 'sync_cron_secret')
+      ),
+      body    := jsonb_build_object('action', 'export'),
+      timeout_milliseconds := 120000
+    );
+  $job$
+);
+```
+
+08:40 UTC, ten minutes after the lead mirror. The order matters as much as the
+spacing: the mirror settles the follow-up state, and the calendar reads it.

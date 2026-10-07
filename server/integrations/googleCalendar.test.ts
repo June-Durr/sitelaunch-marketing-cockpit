@@ -1,0 +1,415 @@
+/**
+ * Writing follow-ups to a calendar, proved against a fake Google.
+ *
+ * Nothing here reaches the network. The fake below behaves the way Calendar
+ * actually behaves in the two cases that matter: it refuses a second event with
+ * an id it already holds, and it can fail after having done the work. Those are
+ * the two that decide whether a retry duplicates somebody's week.
+ *
+ * Every person and every date is invented.
+ */
+
+import { describe, expect, it } from 'vitest';
+
+import {
+  buildFollowUpEvent, calendarEventId, calendarReasons, CALENDAR_SCOPE, dayAfter,
+  EVENT_ID_PREFIX, FORBIDDEN_CALENDAR_IDS, isValidGoogleEventId, isWritableCalendarId,
+  MANAGED_BY_NOTE, pushFollowUpEvent, type CalendarDeps, type FollowUpEventInput,
+} from './googleCalendar.ts';
+import type { GoogleTokenSource } from './googleAuth.ts';
+
+const TASK_ID = 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d';
+
+const tokenSource: GoogleTokenSource = {
+  getAccessToken: async () => 'not-a-real-token',
+  describe: () => 'sync@example.iam.gserviceaccount.com',
+};
+
+function input(over: Partial<FollowUpEventInput> = {}): FollowUpEventInput {
+  return {
+    taskId: TASK_ID,
+    dueDate: '2026-10-12',
+    taskTitle: 'Follow up with Taylor',
+    taskNotes: 'Send one concise final follow-up',
+    prospectName: 'Taylor',
+    organization: 'Your Local Handyman',
+    preferredChannel: 'Phone + email',
+    relationship: 'Prospect',
+    project: 'Site rebuild',
+    ...over,
+  };
+}
+
+/**
+ * A Google Calendar that keeps one event per id.
+ *
+ * `failWith` makes the next N calls fail, and `createdDespiteFailure` reproduces
+ * the nasty one: Google stores the event and the caller never hears about it.
+ */
+function fakeCalendar(options: {
+  failInsertWith?: number;
+  failPatchWith?: number;
+  createDespiteFailure?: boolean;
+} = {}) {
+  const events = new Map<string, Record<string, unknown>>();
+  const calls: string[] = [];
+
+  const fetchImpl = (async (url: string | URL, init?: RequestInit) => {
+    const href = String(url);
+    const method = init?.method ?? 'GET';
+    const body = init?.body ? JSON.parse(String(init.body)) : {};
+    calls.push(`${method} ${href.includes('/events/') ? 'one' : 'collection'}`);
+
+    if (method === 'POST') {
+      const id = String(body.id);
+      if (options.failInsertWith) {
+        if (options.createDespiteFailure) events.set(id, body);
+        return new Response(
+          JSON.stringify({ error: { status: 'PERMISSION_DENIED', errors: [{ reason: 'forbidden' }] } }),
+          { status: options.failInsertWith },
+        );
+      }
+      if (events.has(id)) {
+        return new Response(
+          JSON.stringify({ error: { errors: [{ reason: 'duplicate' }] } }),
+          { status: 409 },
+        );
+      }
+      events.set(id, body);
+      return new Response(JSON.stringify({ id }), { status: 200 });
+    }
+
+    if (method === 'PATCH') {
+      if (options.failPatchWith) {
+        return new Response(
+          JSON.stringify({ error: { status: 'NOT_FOUND' } }),
+          { status: options.failPatchWith },
+        );
+      }
+      const id = decodeURIComponent(href.split('/events/')[1]);
+      events.set(id, { ...(events.get(id) ?? {}), ...body });
+      return new Response(JSON.stringify({ id }), { status: 200 });
+    }
+
+    return new Response('{}', { status: 405 });
+  }) as unknown as typeof fetch;
+
+  return { events, calls, fetchImpl };
+}
+
+const deps = (fetchImpl: typeof fetch, calendarId = 'sitelaunch@group.calendar.google.com'):
+  CalendarDeps => ({ tokenSource, calendarId, fetchImpl });
+
+/* ================================================================ the scope === */
+
+describe('it asks for the narrowest scope that can write an event', () => {
+  it('uses calendar.events, not the whole calendar scope', () => {
+    expect(CALENDAR_SCOPE).toBe('https://www.googleapis.com/auth/calendar.events');
+    // The wider scope also grants creating, sharing and deleting calendars.
+    expect(CALENDAR_SCOPE).not.toBe('https://www.googleapis.com/auth/calendar');
+  });
+});
+
+/* =========================================================== the target === */
+
+describe('it will only write to a calendar somebody configured', () => {
+  it('refuses the primary calendar, which is somebody’s actual diary', () => {
+    for (const id of FORBIDDEN_CALENDAR_IDS) {
+      expect(isWritableCalendarId(id), id).toBe(false);
+    }
+    expect(isWritableCalendarId('PRIMARY')).toBe(false);
+    expect(isWritableCalendarId('  primary  ')).toBe(false);
+  });
+
+  it('refuses no calendar at all rather than guessing one', () => {
+    expect(isWritableCalendarId(null)).toBe(false);
+  });
+
+  it('accepts a dedicated calendar id', () => {
+    expect(isWritableCalendarId('sitelaunch@group.calendar.google.com')).toBe(true);
+  });
+
+  it('throws rather than writing when the target is not configured', async () => {
+    const google = fakeCalendar();
+    await expect(
+      pushFollowUpEvent(deps(google.fetchImpl, 'primary'), input()),
+    ).rejects.toThrow(/not explicitly configured/i);
+    // And it never got as far as a request.
+    expect(google.calls).toEqual([]);
+  });
+});
+
+/* ========================================================== the event id === */
+
+describe('the event id is derived from the task, so a retry cannot duplicate', () => {
+  it('is the task id in a form Google accepts', () => {
+    const id = calendarEventId(TASK_ID);
+    expect(id).toBe(`${EVENT_ID_PREFIX}a1b2c3d4e5f64a7b8c9d0e1f2a3b4c5d`);
+    expect(isValidGoogleEventId(id)).toBe(true);
+  });
+
+  it('is the same every time, which is the entire point', () => {
+    expect(calendarEventId(TASK_ID)).toBe(calendarEventId(TASK_ID));
+  });
+
+  it('differs for a different task', () => {
+    expect(calendarEventId(TASK_ID)).not.toBe(
+      calendarEventId('ffffffff-ffff-4fff-8fff-ffffffffffff'),
+    );
+  });
+
+  it('only uses characters Google allows', () => {
+    // Base32hex: a to v and 0 to 9. A uuid's hex digits all qualify, which is
+    // why no encoding step is needed.
+    expect(calendarEventId(TASK_ID)).toMatch(/^[a-v0-9]+$/);
+  });
+
+  it('refuses an id it cannot express rather than inventing one', () => {
+    expect(() => calendarEventId('not a uuid with spaces')).toThrow();
+    expect(() => calendarEventId('zzz')).toThrow();
+  });
+
+  it('rejects ids Google would reject', () => {
+    expect(isValidGoogleEventId('abc')).toBe(false);
+    expect(isValidGoogleEventId('with-hyphens-xx')).toBe(false);
+    expect(isValidGoogleEventId('WXYZ12345')).toBe(false);
+  });
+});
+
+/* =============================================================== the event === */
+
+describe('what one follow-up looks like on a calendar', () => {
+  it('is an all day entry, with an exclusive end date', () => {
+    const event = buildFollowUpEvent(input());
+    expect(event.start).toEqual({ date: '2026-10-12' });
+    // Google treats an all day end date as exclusive, so a one day event ends
+    // the following day.
+    expect(event.end).toEqual({ date: '2026-10-13' });
+    expect(dayAfter('2026-12-31')).toBe('2027-01-01');
+    expect(dayAfter('2028-02-28')).toBe('2028-02-29');
+  });
+
+  it('has no time of day, because the Cockpit does not know one', () => {
+    const event = buildFollowUpEvent(input()) as unknown as Record<string, unknown>;
+    expect(event.start).not.toHaveProperty('dateTime');
+    expect(event.end).not.toHaveProperty('dateTime');
+  });
+
+  it('does not make the day look busy', () => {
+    expect(buildFollowUpEvent(input()).transparency).toBe('transparent');
+  });
+
+  it('names the person and their organization in the summary', () => {
+    expect(buildFollowUpEvent(input()).summary)
+      .toBe('Follow up: Taylor, Your Local Handyman');
+  });
+
+  it('leaves the organization out when there is not one, rather than writing a blank', () => {
+    expect(buildFollowUpEvent(input({ organization: null })).summary)
+      .toBe('Follow up: Taylor');
+  });
+
+  it('uses no em dash, because nothing in this app does', () => {
+    const event = buildFollowUpEvent(input());
+    expect(event.summary).not.toContain('\\u2014');
+    expect(event.description).not.toContain('\\u2014');
+  });
+
+  it('carries the next action, the channel, the relationship and the project', () => {
+    const description = buildFollowUpEvent(input()).description;
+    expect(description).toContain('Send one concise final follow-up');
+    expect(description).toContain('Phone + email');
+    expect(description).toContain('Prospect');
+    expect(description).toContain('Site rebuild');
+  });
+
+  it('names the Cockpit task, so an event can be traced back', () => {
+    expect(buildFollowUpEvent(input()).description).toContain(TASK_ID);
+  });
+
+  it('says who manages it, so nobody edits it expecting the edit to last', () => {
+    expect(buildFollowUpEvent(input()).description).toContain(MANAGED_BY_NOTE);
+    expect(MANAGED_BY_NOTE).toContain('SiteLaunch Cockpit');
+  });
+
+  it('says not recorded rather than leaving a field blank or inventing one', () => {
+    const description = buildFollowUpEvent(
+      input({ taskNotes: null, preferredChannel: null, relationship: null, project: null }),
+    ).description;
+    expect(description).toContain('No next action recorded.');
+    expect(description).toContain('How to reach them: not recorded');
+    expect(description).toContain('Relationship: not recorded');
+    expect(description).toContain('Project: not recorded');
+  });
+});
+
+/* ========================================================= pushing it out === */
+
+describe('pushing the same follow-up three times leaves one event', () => {
+  it('creates once, then updates', async () => {
+    const google = fakeCalendar();
+    const target = deps(google.fetchImpl);
+
+    const first = await pushFollowUpEvent(target, input());
+    const second = await pushFollowUpEvent(target, input());
+    const third = await pushFollowUpEvent(target, input());
+
+    expect(first.outcome).toBe('created');
+    expect(second.outcome).toBe('updated');
+    expect(third.outcome).toBe('updated');
+
+    expect(first.eventId).toBe(second.eventId);
+    expect(second.eventId).toBe(third.eventId);
+    expect(google.events.size).toBe(1);
+  });
+
+  it('keeps one event per task, not one per run', async () => {
+    const google = fakeCalendar();
+    const target = deps(google.fetchImpl);
+    const tasks = [
+      TASK_ID,
+      'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+    ];
+
+    for (let run = 0; run < 3; run += 1) {
+      for (const taskId of tasks) {
+        await pushFollowUpEvent(target, input({ taskId }));
+      }
+    }
+
+    expect(google.events.size).toBe(3);
+  });
+
+  it('moves the existing event when the date changes, rather than adding another', async () => {
+    const google = fakeCalendar();
+    const target = deps(google.fetchImpl);
+
+    await pushFollowUpEvent(target, input({ dueDate: '2026-10-12' }));
+    const moved = await pushFollowUpEvent(target, input({ dueDate: '2026-10-20' }));
+
+    expect(moved.outcome).toBe('updated');
+    expect(google.events.size).toBe(1);
+
+    const stored = google.events.get(moved.eventId) as Record<string, unknown>;
+    expect(stored.start).toEqual({ date: '2026-10-20' });
+    expect(stored.end).toEqual({ date: '2026-10-21' });
+  });
+
+  it('brings a changed description across on the update', async () => {
+    const google = fakeCalendar();
+    const target = deps(google.fetchImpl);
+
+    await pushFollowUpEvent(target, input({ taskNotes: 'Ring him' }));
+    const updated = await pushFollowUpEvent(target, input({ taskNotes: 'Send the quote' }));
+
+    const stored = google.events.get(updated.eventId) as Record<string, unknown>;
+    expect(String(stored.description)).toContain('Send the quote');
+  });
+
+  it('restores an event somebody deleted by hand instead of never syncing again', async () => {
+    const google = fakeCalendar();
+    const target = deps(google.fetchImpl);
+
+    await pushFollowUpEvent(target, input());
+    const again = await pushFollowUpEvent(target, input());
+
+    const stored = google.events.get(again.eventId) as Record<string, unknown>;
+    expect(stored.status).toBe('confirmed');
+  });
+});
+
+describe('a create that Google completed but never reported', () => {
+  it('does not produce a second event on the retry', async () => {
+    /**
+     * The failure this whole design exists for.
+     *
+     * Google stores the event and the response is lost. With a random id the
+     * retry would create a second entry in somebody's week and nothing would
+     * notice. With an id derived from the task, the retry gets a 409 and
+     * patches.
+     */
+    const lost = fakeCalendar({ failInsertWith: 504, createDespiteFailure: true });
+    await expect(pushFollowUpEvent(deps(lost.fetchImpl), input())).rejects.toThrow(/504/);
+    expect(lost.events.size).toBe(1);
+
+    // The retry, against the same store, now that Google is answering again.
+    const retry = fakeCalendar();
+    for (const [id, body] of lost.events) retry.events.set(id, body);
+
+    const result = await pushFollowUpEvent(deps(retry.fetchImpl), input());
+    expect(result.outcome).toBe('updated');
+    expect(retry.events.size).toBe(1);
+  });
+});
+
+/* ============================================================= failures === */
+
+describe('a failed write says what went wrong without saying too much', () => {
+  it('reports the status and Google’s own reason code', async () => {
+    const google = fakeCalendar({ failInsertWith: 403 });
+    await expect(pushFollowUpEvent(deps(google.fetchImpl), input())).rejects.toThrow(
+      /Google Calendar POST failed \(HTTP 403\).*(PERMISSION_DENIED|FORBIDDEN)/,
+    );
+  });
+
+  it('reports a failed update too', async () => {
+    const google = fakeCalendar();
+    await pushFollowUpEvent(deps(google.fetchImpl), input());
+
+    const broken = fakeCalendar({ failPatchWith: 404 });
+    for (const [id, body] of google.events) broken.events.set(id, body);
+
+    await expect(pushFollowUpEvent(deps(broken.fetchImpl), input())).rejects.toThrow(
+      /Google Calendar PATCH failed \(HTTP 404\).*NOT_FOUND/,
+    );
+  });
+
+  it('keeps only the reason codes out of a failure body', () => {
+    expect(calendarReasons({ error: { status: 'PERMISSION_DENIED' } }))
+      .toEqual(['PERMISSION_DENIED']);
+    // Calendar writes its reasons in lower camel case.
+    expect(calendarReasons({ error: { errors: [{ reason: 'notFound' }] } }))
+      .toEqual(['NOT_FOUND']);
+    expect(calendarReasons({ error: { errors: [{ reason: 'duplicate' }] } }))
+      .toEqual(['DUPLICATE']);
+  });
+
+  it('cannot be made to leak an address, a token or a key', () => {
+    const nasty = {
+      error: {
+        status: 'sync@example.iam.gserviceaccount.com',
+        message: 'Request had client_email=someone@example.com',
+        errors: [
+          { reason: '-----BEGIN PRIVATE KEY-----MIIEvQ' },
+          { reason: 'ya29.notarealtoken' },
+          { reason: 'some free text with spaces' },
+        ],
+      },
+    };
+    expect(calendarReasons(nasty)).toEqual([]);
+  });
+
+  it('says nothing rather than throwing on a body it does not understand', () => {
+    expect(calendarReasons(null)).toEqual([]);
+    expect(calendarReasons({})).toEqual([]);
+    expect(calendarReasons({ error: {} })).toEqual([]);
+    expect(calendarReasons('a string')).toEqual([]);
+    expect(calendarReasons({ error: { errors: 'not an array' } })).toEqual([]);
+  });
+});
+
+/* ========================================================== no deletions === */
+
+describe('it never deletes anything', () => {
+  it('makes no DELETE request, whatever it is asked to do', async () => {
+    const google = fakeCalendar();
+    const target = deps(google.fetchImpl);
+
+    await pushFollowUpEvent(target, input());
+    await pushFollowUpEvent(target, input({ dueDate: '2026-11-01' }));
+
+    expect(google.calls.some((call) => call.startsWith('DELETE'))).toBe(false);
+    expect(google.events.size).toBe(1);
+  });
+});

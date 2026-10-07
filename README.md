@@ -74,9 +74,15 @@ can improve or worsen with nothing having happened. A fixed program cannot do th
 | Invented by the app | Never | Never |
 
 Marking a task done also writes one activity record, linked back to the task. Doing it
-again writes nothing: the pairing is deduplicated in code and by a partial unique index
-in migration 0003. Skipping a task writes nothing at all, because skipping means it did
+again writes nothing at all: the pairing is deduplicated in code and by a partial unique
+index in migration 0003. Skipping a task writes nothing, because skipping means it did
 not happen.
+
+One task is special. The follow-up the rule keeps for a lead **recurs**: finishing it
+reopens it on the next date rather than leaving a finished task behind and starting
+another, because "keep in touch with this person" has no end. There is at most one per
+lead, enforced by a unique index in migration 0009, and the record of what was actually
+done is the activity log, which that lifecycle never touches.
 
 Nothing backfills activity from historical data. If nobody wrote it down at the time,
 the honest answer is that we do not know.
@@ -264,13 +270,22 @@ supabase/
     0003_activity_and_calendar.sql Activity log, calendar columns, dedup indexes
     0004_security_hardening.sql  security_invoker views, cross-owner protection
     0005_integrations.sql        Connections, sync runs, daily GA4 and Search Console
+    0006_analytics_schedule.sql  pg_cron and pg_net, and the helper a schedule calls
+    0007_lead_mirror.sql         Relationship follow-up columns and lead_follow_up_state
+    0008_mirror_conflict_target.sql  Makes the activity key usable as an upsert target
+    0009_follow_up_tasks.sql     The recurring follow-up task, and its reconciliation
 ```
 
 ## Not in this version
 
-No Instagram, Facebook, LinkedIn, GA4 or Search Console OAuth. No predictive modelling,
-no ML, no LLM-generated recommendations, and no claim that the app is trained on
-anything. Data arrives by manual entry or CSV import.
+No Instagram, Facebook, LinkedIn or TikTok. No predictive modelling, no ML, no
+LLM-generated recommendations, and no claim that the app is trained on anything.
+
+GA4 and Search Console sync daily through a service account held server side, the
+Google Sheet lead mirror is written from the database, and open follow-ups go out to a
+dedicated Google Calendar. Nothing is read back from that calendar: an appointment is
+not evidence that business contact happened, and classifying one as outreach would
+invent history. Everything else still arrives by manual entry or CSV import.
 
 The schema keeps `accounts.provider_account_id`, `content_items.external_id` and
 `performance_snapshots.ingest_source` so an API sync can be added later without a

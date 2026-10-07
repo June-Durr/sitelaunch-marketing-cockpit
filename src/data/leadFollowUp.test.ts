@@ -168,19 +168,61 @@ describe('a second contact moves the same task rather than adding another', () =
       .toBe('2026-10-16');
   });
 
-  it('starts a new one once the old one has been finished', async () => {
+  it('reopens the one it owns rather than starting another, even after it was finished', async () => {
+    /**
+     * The recurring lifecycle, and the defect it replaced.
+     *
+     * Keeping in touch with somebody has no end, so neither does the task that
+     * represents it. Marking it done and then starting a second one would leave a
+     * trail of finished tasks and, worse, a window in which the lead had a future
+     * date and nothing open to act on.
+     */
     const { repo, ctx, lead } = await withLead();
     const first = await recordContact(ctx, await reload(repo), lead, '2026-10-05');
     // A create plan has no task id: the task did not exist when it was planned.
     expect(first.plan.taskId).toBeNull();
 
     const created = followUps(await reload(repo), lead.id)[0];
-    await repo.update('tasks', created.id, { status: 'done' });
+    expect(created.follow_up_rule_managed).toBe(true);
+    await repo.update('tasks', created.id, { status: 'done', completed_at: '2026-10-06T00:00:00.000Z' });
 
     const second = await recordContact(ctx, await reload(repo), lead, '2026-10-07');
-    expect(second.plan.kind).toBe('create');
+    expect(second.plan.kind).toBe('reschedule');
+    expect(second.plan.taskId).toBe(created.id);
+
+    const after = followUps(await reload(repo), lead.id);
+    expect(after).toHaveLength(1);
+    expect(after[0].id).toBe(created.id);
+    expect(after[0].status).toBe('open');
+    // Reopened properly, not left looking finished.
+    expect(after[0].completed_at).toBeNull();
+    expect(after[0].due_date).toBe('2026-10-14');
+    // And the calendar is told the day it is holding is now wrong.
+    expect(after[0].calendar_sync_status).toBe('pending');
+  });
+
+  it('leaves a finished follow-up somebody made by hand alone', async () => {
+    // Only the rule's own task recurs. A one-off follow-up a person wrote and
+    // ticked off is finished, and adopting it would resurrect their completed
+    // work as an open item.
+    const { repo, ctx, lead } = await withLead();
+    const theirs = await repo.insert('tasks', newTask({
+      lead_id: lead.id,
+      title: 'One-off: send the Spanish mockup',
+      task_type: 'follow_up',
+      status: 'done',
+      due_date: '2026-10-01',
+      completed_at: '2026-10-01T10:00:00.000Z',
+      follow_up_rule_managed: false,
+    }));
+
+    const outcome = await recordContact(ctx, await reload(repo), lead, '2026-10-05');
+    expect(outcome.plan.kind).toBe('create');
 
     const after = await reload(repo);
+    const untouched = after.tasks.find((t) => t.id === theirs.id);
+    expect(untouched?.status).toBe('done');
+    expect(untouched?.title).toBe('One-off: send the Spanish mockup');
     expect(followUps(after, lead.id)).toHaveLength(2);
     expect(followUps(after, lead.id).filter((t) => t.status === 'open')).toHaveLength(1);
   });
@@ -248,7 +290,14 @@ describe('recording a contact only when there is a contact to record', () => {
 });
 
 describe('finishing a follow-up task reschedules the next one', () => {
-  it('logs the activity and moves the same task, leaving one open', async () => {
+  it('logs one activity and reopens the same task on its next date', async () => {
+    /**
+     * The whole of Part 1, in one assertion block.
+     *
+     * The old behaviour marked the task done and then moved it without reopening
+     * it, so the lead came out with a date in the future and nothing open to act
+     * on. Every expectation below is one half of that defect.
+     */
     const { repo, ctx, lead } = await withLead();
 
     const task = await repo.insert('tasks', newTask({
@@ -257,6 +306,7 @@ describe('finishing a follow-up task reschedules the next one', () => {
       task_type: 'follow_up',
       status: 'open',
       due_date: '2026-10-05',
+      follow_up_rule_managed: true,
     }));
 
     const result = await completeTask(
@@ -265,19 +315,54 @@ describe('finishing a follow-up task reschedules the next one', () => {
 
     expect(result.activityCreated).toBe(true);
     expect(result.followUp?.plan.kind).toBe('reschedule');
+    // Not closed, because the rule reopened the very task that was finished.
+    expect(result.markedDone).toBe(false);
 
     const after = await reload(repo);
-    // The task is done and has been moved forward, and there is still only one.
     const tasks = followUps(after, lead.id);
     expect(tasks).toHaveLength(1);
     expect(tasks[0].id).toBe(task.id);
-    expect(tasks[0].due_date).toBe('2026-10-12');
 
-    // One activity, and it is linked to the person.
+    // Open, on the new date, with the completion cleared.
+    expect(tasks[0].status).toBe('open');
+    expect(tasks[0].due_date).toBe('2026-10-12');
+    expect(tasks[0].completed_at).toBeNull();
+    // And the calendar is told the day it is holding is now wrong.
+    expect(tasks[0].calendar_sync_status).toBe('pending');
+    expect(tasks[0].sync_error).toBeNull();
+
+    // The lead's own date moved with it.
+    const updated = after.leads.find((l) => l.id === lead.id) as Lead;
+    expect(updated.next_action_date).toBe('2026-10-12');
+
+    // Exactly one activity, linked to the person, labelled as automatic.
     const logged = after.activityEvents.filter((a) => a.lead_id === lead.id);
     expect(logged).toHaveLength(1);
     expect(logged[0].activity_type).toBe('follow_up_sent');
     expect(logged[0].source).toBe('task_completion');
+  });
+
+  it('closes a follow-up for a lead the rule has stopped chasing', async () => {
+    // Nothing is reopened, so the task really is finished and says so.
+    const { repo, ctx, lead } = await withLead({ follow_up_mode: 'hold' });
+    const task = await repo.insert('tasks', newTask({
+      lead_id: lead.id,
+      title: 'Follow up with Taylor',
+      task_type: 'follow_up',
+      status: 'open',
+      due_date: '2026-10-05',
+      follow_up_rule_managed: true,
+    }));
+
+    const result = await completeTask(
+      ctx, await reload(repo), task, '2026-10-05T12:00:00.000Z',
+    );
+
+    expect(result.markedDone).toBe(true);
+    expect(result.followUp?.plan.kind).toBe('none');
+
+    const after = await reload(repo);
+    expect(followUps(after, lead.id)[0].status).toBe('done');
   });
 
   it('does nothing to a follow-up for a task that names no person', async () => {
@@ -295,7 +380,15 @@ describe('finishing a follow-up task reschedules the next one', () => {
     expect(result.followUp).toBeNull();
   });
 
-  it('does not move anything when the activity was already logged', async () => {
+  it('writes nothing at all the second time it is completed', async () => {
+    /**
+     * Why a repeat call has to be completely inert.
+     *
+     * It used to mark the task done before checking whether the activity already
+     * existed, which undid the reschedule the first call had just made and left
+     * the lead with no open follow-up again. So the check comes first and a
+     * second call touches nothing.
+     */
     const { repo, ctx, lead } = await withLead();
     const task = await repo.insert('tasks', newTask({
       lead_id: lead.id,
@@ -303,21 +396,27 @@ describe('finishing a follow-up task reschedules the next one', () => {
       task_type: 'follow_up',
       status: 'open',
       due_date: '2026-10-05',
+      follow_up_rule_managed: true,
     }));
 
     await completeTask(ctx, await reload(repo), task, '2026-10-05T12:00:00.000Z');
     const between = await reload(repo);
-    const dueAfterFirst = followUps(between, lead.id)[0].due_date;
+    const afterFirst = followUps(between, lead.id)[0];
 
-    // Ticking it again, for instance after reopening it.
-    const again = await completeTask(ctx, between, task, '2026-10-09T12:00:00.000Z');
+    // Ticking it again, which is what a double click or a stale screen does.
+    for (const attempt of [2, 3]) {
+      const again = await completeTask(ctx, await reload(repo), task, '2026-10-09T12:00:00.000Z');
 
-    expect(again.alreadyLogged).toBe(true);
-    expect(again.followUp).toBeNull();
+      expect(again.alreadyLogged, `attempt ${attempt}`).toBe(true);
+      expect(again.activityCreated, `attempt ${attempt}`).toBe(false);
+      expect(again.markedDone, `attempt ${attempt}`).toBe(false);
+      expect(again.followUp, `attempt ${attempt}`).toBeNull();
+    }
 
     const after = await reload(repo);
+    // One activity, one task, and the task is exactly as the first call left it.
     expect(after.activityEvents.filter((a) => a.task_id === task.id)).toHaveLength(1);
-    // The date did not creep forward on a repeat tick either.
-    expect(followUps(after, lead.id)[0].due_date).toBe(dueAfterFirst);
+    expect(followUps(after, lead.id)).toHaveLength(1);
+    expect(followUps(after, lead.id)[0]).toEqual(afterFirst);
   });
 });

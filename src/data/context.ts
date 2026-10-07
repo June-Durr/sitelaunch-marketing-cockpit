@@ -1,9 +1,9 @@
 import { createContext, useContext } from 'react';
 import type { Dataset } from '../types/domain';
 import type {
-  AnalyticsProvider, AnalyticsStatus, ImportReport, LeadMirrorAction,
-  LeadMirrorOutcome, LeadMirrorStatus, NewRow, ReconcileMode, RowPatch, SyncMode,
-  SyncTriggerOutcome, TableMap, TableName,
+  AnalyticsProvider, AnalyticsStatus, CalendarStatus, CalendarSyncOutcome,
+  ImportReport, LeadMirrorAction, LeadMirrorOutcome, LeadMirrorStatus, NewRow,
+  ReconcileMode, RowPatch, SyncMode, SyncTriggerOutcome, TableMap, TableName,
 } from './repository';
 import { EMPTY_DATASET } from './repository';
 
@@ -45,6 +45,10 @@ export interface DataContextValue {
         options?: { mode?: ReconcileMode; expect?: { leadRows: number; touchRows: number } },
       ) => Promise<LeadMirrorOutcome>)
     | null;
+  /** Null in browser-local mode, which has no server to hold a Google key. */
+  loadCalendar: (() => Promise<CalendarStatus>) | null;
+  /** Null in browser-local mode. Asks the server; never calls Google in here. */
+  triggerCalendarSync: (() => Promise<CalendarSyncOutcome>) | null;
 }
 
 export const DataContext = createContext<DataContextValue>({
@@ -72,6 +76,8 @@ export const DataContext = createContext<DataContextValue>({
   triggerSync: null,
   loadLeadMirror: null,
   triggerLeadMirror: null,
+  loadCalendar: null,
+  triggerCalendarSync: null,
 });
 
 export function useData(): DataContextValue {

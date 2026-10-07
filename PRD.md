@@ -131,6 +131,22 @@ and should not be. They are separate tables so a plan can never be mistaken for 
 - A one-time Google Sheet reconciliation, as a dry run and then a gated live
   import, and a server-side sync that rewrites the Sheet from Supabase afterwards.
 
+### Added in the follow-up execution sprint, 2026-10-06
+
+- The recurring follow-up task. Finishing one reopens it on its next date instead
+  of leaving a finished task and starting another, and a repeat completion writes
+  nothing at all. Migration 0009 adds the column that says which task the rule
+  owns, and a unique index allowing one per lead in any state.
+- `reconcile_follow_up_tasks(dry_run)`, the SQL twin of
+  `src/config/followUpTasks.ts`, so every eligible lead has exactly one open
+  follow-up and re-running changes nothing.
+- One follow-up queue on Today, replacing the two sections that listed the same
+  people twice, and an Action queue view on Pipeline alongside Board and Table.
+- `/pipeline?lead=<uuid>` opens one record, so the queue can link to a person.
+- Google Calendar V1: open follow-ups out to a dedicated calendar, one way, with
+  an event id derived from the task so a retry cannot double-book. Nothing is read
+  back, and nothing is ever deleted.
+
 ### Explicitly out of scope for v1
 - Instagram / Facebook / LinkedIn Graph API OAuth.
 - GA4 Data API and Search Console API.
@@ -499,5 +515,13 @@ connection with a multi-tenant abstraction nobody had tested.
    unchanged and reported.
 10. Logging a contact leaves exactly one open follow-up task for that lead, and a
     lead on hold, archived or set to no follow-up has nothing scheduled for it.
-11. No Google credential, service account address, private key or spreadsheet id
-    appears anywhere in the built browser bundle.
+11. No Google credential, service account address, private key, spreadsheet id or
+    calendar id appears anywhere in the built browser bundle.
+12. Every eligible lead has exactly one open follow-up task, and three identical
+    reconciliations leave the count unchanged.
+13. Completing a follow-up records one activity and reopens the same task on its
+    next date, with the completion cleared and the calendar marked stale.
+14. Three identical calendar syncs leave one event per task, and a create that
+    Google completed but never reported does not become a second event.
+15. A failed calendar write keeps the stored event id and records a sanitized
+    reason, so the next run updates rather than duplicates.

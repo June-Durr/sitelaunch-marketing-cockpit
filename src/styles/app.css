@@ -381,7 +381,24 @@ table.data .row-button:hover { color: var(--violet); text-decoration: underline;
 .queue-main { min-width: 0; flex: 1 1 18rem; }
 .queue-title { font-size: 0.9rem; }
 .queue-meta { font-size: 0.76rem; color: var(--ink-3); margin-top: 0.15rem; }
-.queue-side { display: flex; gap: 0.5rem; align-items: center; flex-shrink: 0; }
+/*
+ * The side of a queue row wraps rather than overflowing.
+ *
+ * It used to be flex-shrink: 0, which was fine when it held one date. The
+ * follow-up queue puts a status, a date, a calendar state and a button in here,
+ * and at 390px that ran 141px past the edge of the screen and took the whole
+ * page into a horizontal scroll. Wrapping is the honest fix: the content is
+ * genuinely wider than a phone, so it needs more than one line.
+ */
+.queue-side {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  max-width: 100%;
+  min-width: 0;
+}
 .due-overdue { color: var(--crimson); font-weight: 500; }
 .due-today { color: var(--violet); font-weight: 500; }
 

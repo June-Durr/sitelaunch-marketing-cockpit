@@ -48,10 +48,11 @@ export function IntegrationsPanel({
       }
     >
       <p className="page-lede" style={{ marginTop: 0 }}>
-        Google Analytics and Search Console are not in this list on purpose.{' '}
+        Google Analytics, Search Console, the Sheet mirror and the follow-up calendar are
+        not in this list on purpose.{' '}
         {mode === 'supabase'
-          ? 'They are connected and syncing, and Automatic analytics above reports what they have actually done, so repeating them here would only give you two answers to the same question.'
-          : 'Automatic analytics above is the one place they are reported, and in this browser-only mode it says plainly that there is nothing to report yet.'}{' '}
+          ? 'Each has its own panel above reporting what it has actually done, so repeating them here would only give you two answers to the same question, and the two would eventually disagree.'
+          : 'Each has its own panel above, and in this browser-only mode they say plainly that there is nothing to report yet.'}{' '}
         What is left below is the services still to come.{' '}
         {connected.length === 0
           ? 'None of these is connected, and nothing in this app talks to them yet.'

@@ -23,7 +23,10 @@
 import type { ActivityType, Dataset, Lead } from '../types/domain';
 import type { DataContextValue } from './context';
 import { NON_TOUCH_ACTIVITY, planNextAction, type NextActionPlan } from '../config/followUp';
-import { blankCalendarSync } from './factories';
+import {
+  planFollowUpTasks, type FollowUpTaskPlan,
+} from '../config/followUpTasks';
+import { pendingCalendarSync } from './factories';
 import { dayOf } from '../lib/dates';
 
 /** Does logging this activity type against a lead count as contact with them? */
@@ -80,15 +83,34 @@ export async function recordContact(
       status: 'open',
       due_date: plan.dueDate,
       window_type: null,
-      notes: plan.reason,
+      notes: plan.notes ?? plan.reason,
       completed_at: null,
-      ...blankCalendarSync(),
+      follow_up_rule_managed: true,
+      ...pendingCalendarSync(),
       is_seed: false,
     });
   } else {
+    /**
+     * Reopened, not just moved.
+     *
+     * The task may well have been marked done a moment ago by whoever logged this
+     * contact. A follow-up that recurs has to come back open on its new date, or
+     * the lead ends up with a date in the future and nothing to act on, which is
+     * exactly how it used to disappear from the queue.
+     *
+     * The calendar goes back to pending because the event it is holding now says
+     * the wrong day, and sync_error is cleared because whatever failed last time
+     * is not what is being attempted now.
+     */
     await ctx.update('tasks', plan.taskId as string, {
       due_date: plan.dueDate,
-      notes: plan.reason,
+      notes: plan.notes ?? plan.reason,
+      title: plan.title ?? undefined,
+      status: 'open',
+      completed_at: null,
+      follow_up_rule_managed: true,
+      calendar_sync_status: 'pending',
+      sync_error: null,
     });
   }
 
@@ -120,4 +142,68 @@ export async function recordContactIfRelevant(
   if (!lead) return null;
 
   return recordContact(ctx, data, lead, input.occurredAt);
+}
+
+/* ------------------------------------------------------------------------- */
+
+export interface ReconcileResult {
+  plan: FollowUpTaskPlan;
+  created: number;
+  updated: number;
+  closed: number;
+  unchanged: number;
+}
+
+/**
+ * Bring the task list into line with every lead's calculated follow-up date.
+ *
+ * The plan comes from src/config/followUpTasks.ts and this only carries it out,
+ * so what gets written is exactly what a dry run would have printed. Creates and
+ * updates first, then closures, so a lead that has become ineligible cannot be
+ * re-created by a later pass over the same plan.
+ *
+ * Idempotent: running it again produces a plan of nothing but 'unchanged', and
+ * writes nothing at all.
+ *
+ * supabase/migrations/0009_follow_up_tasks.sql does the same thing in SQL, which
+ * is what runs server side where there is no browser. The two are checked against
+ * each other in src/test/pg/followUpTasks.test.ts.
+ */
+export async function reconcileFollowUpTasks(
+  ctx: Pick<DataContextValue, 'insert' | 'update'>,
+  data: Dataset,
+): Promise<ReconcileResult> {
+  const plan = planFollowUpTasks(data.leads, data.tasks);
+
+  for (const entry of plan.entries) {
+    if (entry.action === 'create' && entry.fields) {
+      await ctx.insert('tasks', {
+        content_item_id: null,
+        lead_id: entry.lead.id,
+        task_type: 'follow_up',
+        window_type: null,
+        external_calendar_id: null,
+        external_event_id: null,
+        last_synced_at: null,
+        is_seed: false,
+        ...entry.fields,
+      });
+    } else if (entry.action === 'update' && entry.fields && entry.taskId) {
+      await ctx.update('tasks', entry.taskId, { ...entry.fields });
+    }
+  }
+
+  for (const entry of plan.entries) {
+    if (entry.action !== 'close' || !entry.taskId) continue;
+    // Skipped, never deleted. Skipping is the status that means "decided not to".
+    await ctx.update('tasks', entry.taskId, { status: 'skipped' });
+  }
+
+  return {
+    plan,
+    created: plan.toCreate,
+    updated: plan.toUpdate,
+    closed: plan.toClose,
+    unchanged: plan.unchanged,
+  };
 }

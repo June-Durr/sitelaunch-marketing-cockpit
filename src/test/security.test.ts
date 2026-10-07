@@ -655,3 +655,143 @@ describe('the built bundle carries no Google credential', () => {
     expect(all).toContain('supabase');
   });
 });
+
+/* ------------------------------------------------------------------------ */
+
+describe('the follow-up calendar keeps every credential server side', () => {
+  const shippedFiles = readdirSync('src', { recursive: true, encoding: 'utf8' }).filter(
+    (f) => typeof f === 'string' && /\.tsx?$/.test(f) && !/\.test\.tsx?$/.test(f),
+  ) as string[];
+
+  it('never names the calendar id or the key variable anywhere in src', () => {
+    // Both are Edge Function secrets. The browser learns which calendar is being
+    // written to from the connection row the server wrote, not from a build.
+    expect(shippedSource).not.toContain('GOOGLE_CALENDAR_ID');
+    expect(shippedSource).not.toContain('VITE_GOOGLE_CALENDAR');
+  });
+
+  it('calls no Google Calendar endpoint from the browser', () => {
+    for (const host of [
+      'www.googleapis.com/calendar', 'googleapis.com/calendar/v3',
+      'https://www.googleapis.com/auth/calendar',
+    ]) {
+      expect(shippedSource, `src reaches ${host}`).not.toContain(host);
+    }
+  });
+
+  it('keeps the calendar scope and the client on the server', () => {
+    expect(serverSource).toContain('https://www.googleapis.com/auth/calendar.events');
+    expect(serverSource).toContain('googleapis.com/calendar/v3/calendars');
+  });
+
+  it('asks for the narrowest scope that can write an event', () => {
+    const provider = readFileSync('server/integrations/googleCalendar.ts', 'utf8');
+    const match = /CALENDAR_SCOPE = '([^']+)'/.exec(provider);
+    expect(match?.[1]).toBe('https://www.googleapis.com/auth/calendar.events');
+    // The wider scope also grants creating, sharing and deleting whole calendars.
+    expect(provider).not.toContain("'https://www.googleapis.com/auth/calendar'");
+  });
+
+  it('never imports the calendar client into src', () => {
+    for (const file of shippedFiles) {
+      const text = readFileSync(`src/${file}`, 'utf8');
+      expect(text, `src/${file} imports the calendar client`)
+        .not.toContain('googleCalendar');
+    }
+  });
+
+  it('asks the server to do the work rather than doing it', () => {
+    const repo = readFileSync('src/data/supabaseRepository.ts', 'utf8');
+    expect(repo).toContain('sync-calendar');
+    expect(repo).toContain('authorization');
+  });
+});
+
+describe('the calendar sync will not write where it was not told to', () => {
+  const provider = readFileSync('server/integrations/googleCalendar.ts', 'utf8');
+  const fn = readFileSync('supabase/functions/sync-calendar/index.ts', 'utf8');
+
+  it('refuses the primary calendar in code, not only in a comment', () => {
+    expect(provider).toContain('FORBIDDEN_CALENDAR_IDS');
+    expect(provider).toContain("'primary'");
+    expect(provider).toContain('isWritableCalendarId');
+    // And the function checks before it does anything at all.
+    expect(fn).toContain('isWritableCalendarId');
+  });
+
+  it('never deletes an event', () => {
+    // Not a comment: there is no request with that method anywhere in the path.
+    for (const [name, text] of [
+      ['the provider', provider],
+      ['the function', fn],
+    ] as [string, string][]) {
+      expect(text, `${name} issues a DELETE`).not.toMatch(/method:\s*'DELETE'/);
+      expect(text, `${name} issues a delete`).not.toMatch(/method:\s*"DELETE"/);
+    }
+  });
+
+  it('pushes only open follow-up tasks', () => {
+    const store = readFileSync('supabase/functions/_shared/calendarStore.ts', 'utf8');
+    expect(store).toContain("eq('task_type', 'follow_up')");
+    expect(store).toContain("eq('status', 'open')");
+    // And always narrowed to one owner, because the service role bypasses RLS.
+    expect(store).toContain("eq('owner_id', ownerId)");
+  });
+
+  it('keeps the stored event id when a write fails', () => {
+    const store = readFileSync('supabase/functions/_shared/calendarStore.ts', 'utf8');
+    const at = store.indexOf('export async function markTaskSyncFailed');
+    expect(at).toBeGreaterThan(-1);
+    const body = store.slice(at, store.indexOf('\n}', at));
+
+    expect(body).toContain("calendar_sync_status: 'error'");
+    // Clearing these would make the next successful run create a second event.
+    expect(body).not.toContain('external_event_id');
+    expect(body).not.toContain('external_calendar_id');
+  });
+});
+
+describe('the recurring follow-up task is identified by a column, not by prose', () => {
+  const sql = sqlFor('0009_follow_up_tasks.sql');
+  const statements = sql
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/--.*/g, ' ')
+    .toLowerCase();
+
+  it('adds the column rather than matching on a title or a note', () => {
+    expect(statements).toContain('add column follow_up_rule_managed boolean not null default false');
+    // Nothing in the reconciliation reads the words on a task to decide what it owns.
+    expect(statements).not.toContain("title like");
+    expect(statements).not.toContain("notes like");
+  });
+
+  it('allows one rule-managed follow-up per lead, whatever state it is in', () => {
+    const at = statements.indexOf('create unique index tasks_one_managed_follow_up_per_lead');
+    expect(at, 'the index is missing').toBeGreaterThan(-1);
+    const block = statements.slice(at, statements.indexOf(';', at));
+
+    expect(block).toContain('(owner_id, lead_id)');
+    expect(block).toContain('follow_up_rule_managed');
+    // Status-independent on purpose: the task recurs, so scoping to open tasks
+    // would let a second one appear the moment the first was marked done.
+    expect(block).not.toContain('status');
+  });
+
+  it('runs the reconciliation as the caller, so row level security applies', () => {
+    expect(statements).toContain('security invoker');
+    expect(sql).toContain('revoke all on function reconcile_follow_up_tasks(boolean) from anon');
+    expect(sql).toContain(
+      'grant execute on function reconcile_follow_up_tasks(boolean) to authenticated',
+    );
+    expect(statements).not.toContain('security definer');
+  });
+
+  it('deletes nothing', () => {
+    expect(statements).not.toContain('delete from tasks');
+    expect(statements).not.toContain('drop table');
+  });
+
+  it('defaults to a dry run, so writing has to be asked for', () => {
+    expect(statements).toContain('dry_run boolean default true');
+  });
+});

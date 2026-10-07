@@ -249,6 +249,21 @@ export interface Task {
   notes: string | null;
   completed_at: string | null;
 
+  /**
+   * True when the follow-up rule owns this task.
+   *
+   * A lead has at most one of these, and it recurs: finishing it reopens it on a
+   * new date rather than leaving a finished task behind and starting another. The
+   * permanent record of what was actually done is the activity log, which this
+   * never touches.
+   *
+   * It is a column rather than something inferred from the title or the notes,
+   * because a person is free to reword both, and a rule that reads somebody's
+   * prose to decide what it owns will eventually adopt a task it should not have
+   * touched. See supabase/migrations/0009_follow_up_tasks.sql.
+   */
+  follow_up_rule_managed: boolean;
+
   /* Calendar fields. Reserved for a future sync; nothing writes them yet. */
   external_calendar_id: string | null;
   external_event_id: string | null;

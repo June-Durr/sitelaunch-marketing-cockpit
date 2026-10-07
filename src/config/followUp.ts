@@ -326,14 +326,72 @@ export function nextFollowUpDate(stage: LeadStage, fromDay: string): string | nu
 /* ------------------------------------------------------------------------- */
 
 /**
+ * Should the rule be keeping a follow-up task for this lead at all?
+ *
+ * The same four refusals as followUpStatus, in the same order, plus the one extra
+ * condition a task needs that a status does not: a date to be due on. A lead the
+ * rule is willing to chase but that nobody has given a date is not an error, it
+ * simply has nothing to put on a task.
+ */
+export function followUpTaskEligibility(
+  lead: Lead,
+): { eligible: boolean; reason: string } {
+  if (lead.follow_up_mode === 'archived') {
+    return { eligible: false, reason: 'Archived, so the rule keeps no task for them.' };
+  }
+  if (lead.stage === 'won' || lead.stage === 'lost') {
+    return {
+      eligible: false,
+      reason: `${lead.stage === 'won' ? 'Won' : 'Lost'}, so there is nothing left to chase.`,
+    };
+  }
+  if (lead.follow_up_mode === 'hold') {
+    return { eligible: false, reason: 'On hold, waiting on them, so nothing is scheduled.' };
+  }
+  if (lead.follow_up_mode === 'none') {
+    return { eligible: false, reason: 'Set to no follow-up on purpose.' };
+  }
+  if (lead.next_action_date === null) {
+    return { eligible: false, reason: 'No follow-up date set, so there is nothing to be due.' };
+  }
+  return { eligible: true, reason: 'Followed up on the usual rhythm.' };
+}
+
+export function isEligibleForFollowUpTask(lead: Lead): boolean {
+  return followUpTaskEligibility(lead).eligible;
+}
+
+/** What the rule calls a follow-up task. One format, used everywhere. */
+export function followUpTaskTitle(lead: Lead): string {
+  return `Follow up with ${lead.prospect_name}`;
+}
+
+/**
+ * What goes in the task's notes.
+ *
+ * The lead's own recorded next action first, because somebody wrote it and it is
+ * about this particular person. Then whatever the task already said, so adopting
+ * a task a person made by hand does not throw their wording away. The rule's own
+ * explanation only when there is nothing better, which is the one case where
+ * generated copy is an improvement on a blank.
+ */
+export function followUpTaskNotes(
+  lead: Lead,
+  existingNotes: string | null,
+  reason: string,
+): string {
+  return lead.next_action ?? existingNotes ?? reason;
+}
+
+/**
  * What logging a contact should do to the lead's next action.
  *
- * Deterministic and total: the same lead, the same touch day and the same open
- * tasks always produce the same plan, and every branch says why.
+ * Deterministic and total: the same lead, the same touch day and the same tasks
+ * always produce the same plan, and every branch says why.
  *
  *   'none'        The lead's mode or stage says not to schedule anything.
- *   'create'      No open follow-up task exists, so make one.
- *   'reschedule'  One already exists, so move it. Never a second task.
+ *   'create'      The rule keeps no task for this lead yet, so make one.
+ *   'reschedule'  It already keeps one, so reopen and move it. Never a second.
  */
 export type NextActionKind = 'none' | 'create' | 'reschedule';
 
@@ -345,6 +403,8 @@ export interface NextActionPlan {
   taskId: string | null;
   /** The title to give the task. Plain words, no jargon. */
   title: string | null;
+  /** What the task's notes should say. */
+  notes: string | null;
   /** Why this plan and not another. Shown to the operator, not just logged. */
   reason: string;
 }
@@ -356,6 +416,32 @@ export function openFollowUpTask(tasks: readonly Task[], leadId: string): Task |
       (t) => t.lead_id === leadId && t.task_type === 'follow_up' && t.status === 'open',
     ) ?? null
   );
+}
+
+/**
+ * The one follow-up task the rule keeps for this lead, whatever state it is in.
+ *
+ * WHY STATUS IS NOT PART OF THE LOOKUP
+ *
+ * This task recurs. Finishing it does not end it; it is reopened on the next date,
+ * because the thing being modelled is "keep in touch with this person", which has
+ * no end. Looking only at open tasks is what caused the original defect: finishing
+ * a follow-up marked it done, and the next lookup either found nothing and made a
+ * second task, or found a stale copy and moved it without reopening it, leaving a
+ * lead with a future date and no task to act on.
+ *
+ * A task a person made by hand is adopted when the rule keeps none yet, rather
+ * than a second one being created alongside it. Their wording survives: see
+ * followUpTaskNotes.
+ */
+export function recurringFollowUpTask(
+  tasks: readonly Task[],
+  leadId: string,
+): Task | null {
+  const managed = tasks.find(
+    (t) => t.lead_id === leadId && t.task_type === 'follow_up' && t.follow_up_rule_managed,
+  );
+  return managed ?? openFollowUpTask(tasks, leadId);
 }
 
 /**
@@ -375,6 +461,7 @@ export function planNextAction(
     dueDate: null,
     taskId: null,
     title: null,
+    notes: null,
     reason,
   });
 
@@ -399,24 +486,28 @@ export function planNextAction(
   }
 
   const cadence = FOLLOW_UP_CADENCE_DAYS[lead.stage];
-  const title = `Follow up with ${lead.prospect_name}`;
-  const existing = openFollowUpTask(tasks, lead.id);
+  const title = followUpTaskTitle(lead);
+  const existing = recurringFollowUpTask(tasks, lead.id);
 
   if (existing) {
+    const reason = `Moved the follow-up this lead already has to ${cadence} days after the contact, rather than adding a second one.`;
     return {
       kind: 'reschedule',
       dueDate,
       taskId: existing.id,
       title,
-      reason: `Moved the follow-up already open for this lead to ${cadence} days after the contact, rather than adding a second one.`,
+      notes: followUpTaskNotes(lead, existing.notes, reason),
+      reason,
     };
   }
 
+  const reason = `Scheduled a follow-up ${cadence} days after the contact, which is the rhythm for the ${lead.stage} stage.`;
   return {
     kind: 'create',
     dueDate,
     taskId: null,
     title,
-    reason: `Scheduled a follow-up ${cadence} days after the contact, which is the rhythm for the ${lead.stage} stage.`,
+    notes: followUpTaskNotes(lead, null, reason),
+    reason,
   };
 }

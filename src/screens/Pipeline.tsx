@@ -1,4 +1,5 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useData } from '../data/context';
 import { Empty, Observed, PageHead, Stat, Tag, Unknown } from '../components/primitives';
 import { LeadForm } from './LeadForm';
@@ -9,17 +10,44 @@ import { aggregate } from '../lib/metrics';
 import type { Lead } from '../types/domain';
 import { STAGE_LABELS, STAGE_ORDER } from '../types/domain';
 import {
-  FOLLOW_UP_STATUS_EXPLANATIONS, FOLLOW_UP_STATUS_LABELS, FOLLOW_UP_STATUS_TONES,
-  LAST_TOUCH_BASIS_LABELS, NEEDS_ACTION_STATUSES, followUpStates,
+  DUE_SOON_DAYS, FOLLOW_UP_STATUS_EXPLANATIONS, FOLLOW_UP_STATUS_LABELS,
+  FOLLOW_UP_STATUS_TONES, LAST_TOUCH_BASIS_LABELS, NEEDS_ACTION_STATUSES,
+  followUpStates,
 } from '../config/followUp';
+import { FollowUpQueue } from '../components/FollowUpQueue';
 
 const OPEN_STAGES = STAGE_ORDER.filter((s) => s !== 'won' && s !== 'lost');
 
 export function Pipeline() {
   const { data } = useData();
   // Persisted, so it survives a reload and travels in a backup.
-  const [view, setView] = useState<'board' | 'table'>(() => readSettings().pipelineView);
+  const [view, setView] = useState<'board' | 'table' | 'queue'>(
+    () => readSettings().pipelineView,
+  );
   const [editing, setEditing] = useState<{ lead: Lead | null } | null>(null);
+
+  /**
+   * Open one particular person, when something linked straight to them.
+   *
+   * Today's queue links to /pipeline?lead=<id> so that pressing Open lands on the
+   * record rather than on a list of everybody. The id is cleared from the address
+   * once the drawer is open, so closing it and reloading does not reopen it.
+   */
+  const [params, setParams] = useSearchParams();
+  const requestedLead = params.get('lead');
+
+  useEffect(() => {
+    if (!requestedLead) return;
+    const lead = data.leads.find((l) => l.id === requestedLead);
+    // Waiting for the dataset to arrive rather than deciding it is missing.
+    if (!lead) return;
+
+    // oxlint-disable-next-line react/set-state-in-effect
+    setEditing({ lead });
+    const next = new URLSearchParams(params);
+    next.delete('lead');
+    setParams(next, { replace: true });
+  }, [requestedLead, data.leads, params, setParams]);
 
   const now = today();
 
@@ -49,6 +77,22 @@ export function Pipeline() {
 
   const needingAction = states.filter((s) => NEEDS_ACTION_STATUSES.includes(s.status));
   const neverTouched = states.filter((s) => s.lastTouch.basis === 'none');
+
+  /**
+   * The action queue's three groups, taken straight off the sorted states.
+   *
+   * No new date arithmetic: followUpStates has already decided each status and
+   * put them worst first. This only cuts the same list into the three questions
+   * somebody actually asks: who now, who this week, and who is deliberately
+   * being left alone.
+   */
+  const queueNow = states.filter((s) => NEEDS_ACTION_STATUSES.includes(s.status));
+  const queueSoon = states.filter((s) => s.status === 'due_soon');
+  const queueLater = states.filter((s) => s.status === 'scheduled');
+  const queueResting = states.filter((s) =>
+    ['not_scheduled', 'on_hold', 'archived', 'closed'].includes(s.status),
+  );
+  const [showResting, setShowResting] = useState(false);
 
   const open = data.leads.filter((l) => l.stage !== 'won' && l.stage !== 'lost');
   const won = data.leads.filter((l) => l.stage === 'won');
@@ -95,24 +139,18 @@ export function Pipeline() {
       </div>
 
       <div className="btn-row" style={{ margin: '1.75rem 0 1rem' }}>
-        <button
-          className={view === 'board' ? 'btn btn-primary' : 'btn'}
-          onClick={() => {
-            setView('board');
-            writeSettings({ ...readSettings(), pipelineView: 'board' });
-          }}
-        >
-          Board
-        </button>
-        <button
-          className={view === 'table' ? 'btn btn-primary' : 'btn'}
-          onClick={() => {
-            setView('table');
-            writeSettings({ ...readSettings(), pipelineView: 'table' });
-          }}
-        >
-          Table
-        </button>
+        {(['queue', 'board', 'table'] as const).map((option) => (
+          <button
+            key={option}
+            className={view === option ? 'btn btn-primary' : 'btn'}
+            onClick={() => {
+              setView(option);
+              writeSettings({ ...readSettings(), pipelineView: option });
+            }}
+          >
+            {option === 'queue' ? 'Action queue' : option === 'board' ? 'Board' : 'Table'}
+          </button>
+        ))}
       </div>
 
       {data.leads.length === 0 ? (
@@ -120,6 +158,72 @@ export function Pipeline() {
           Once someone gets in touch, add them here. Until then the app has no way to
           connect anything you post to actual work coming in.
         </Empty>
+      ) : view === 'queue' ? (
+        <>
+          <p className="page-lede" style={{ marginTop: 0 }}>
+            The same people as the board, in the order the week actually needs them.
+            Whoever has waited longest comes first, and anybody deliberately on hold,
+            archived or finished is tucked away at the bottom rather than scrolled past
+            twenty times a day.
+          </p>
+
+          <div className="fieldset-legend">
+            Do these now {queueNow.length > 0 ? `(${queueNow.length})` : ''}
+          </div>
+          <FollowUpQueue
+            states={queueNow}
+            tasks={data.tasks}
+            now={now}
+            emptyMessage="Nobody is overdue or due today."
+          />
+
+          <div className="fieldset-legend">
+            Due within {DUE_SOON_DAYS} days {queueSoon.length > 0 ? `(${queueSoon.length})` : ''}
+          </div>
+          <FollowUpQueue
+            states={queueSoon}
+            tasks={data.tasks}
+            now={now}
+            emptyMessage="Nothing lands in the next few days."
+          />
+
+          <div className="fieldset-legend">
+            Later {queueLater.length > 0 ? `(${queueLater.length})` : ''}
+          </div>
+          <FollowUpQueue
+            states={queueLater}
+            tasks={data.tasks}
+            now={now}
+            emptyMessage="Nothing further out is scheduled."
+          />
+
+          {queueResting.length > 0 ? (
+            <>
+              <div className="fieldset-legend">
+                Not being chased ({queueResting.length})
+              </div>
+              <p className="field-hint" style={{ marginTop: 0 }}>
+                On hold, archived, deliberately not scheduled, won or lost. They are kept
+                here so the relationship is not lost, and kept out of the way so the list
+                above stays a list of things to do.{' '}
+                <button
+                  className="row-button"
+                  onClick={() => setShowResting((on) => !on)}
+                >
+                  {showResting ? 'Hide them' : 'Show them'}
+                </button>
+              </p>
+              {showResting ? (
+                <FollowUpQueue
+                  states={queueResting}
+                  tasks={data.tasks}
+                  now={now}
+                  emptyMessage="Nobody."
+                />
+              ) : null}
+            </>
+          ) : null}
+        </>
       ) : view === 'board' ? (
         <div className="board">
           {STAGE_ORDER.map((stage) => {

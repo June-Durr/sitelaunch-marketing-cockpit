@@ -569,8 +569,8 @@ describe('the database refuses a duplicate even if the code asks for one', () =>
   });
 });
 
-describe('a lead can have one open follow-up and no more', () => {
-  it('refuses a second open follow-up for the same lead', async () => {
+describe('the rule owns one follow-up per lead and no more', () => {
+  it('refuses a second rule-managed follow-up for the same lead', async () => {
     const leadId = await seedRow(t, USER_A, 'leads', { prospect_name: 'Taylor' });
     const task = {
       title: 'Follow up with Taylor',
@@ -578,15 +578,23 @@ describe('a lead can have one open follow-up and no more', () => {
       status: 'open',
       due_date: '2026-10-12',
       lead_id: leadId,
+      follow_up_rule_managed: true,
     };
 
     await expect(seedRow(t, USER_A, 'tasks', task)).resolves.toBeTruthy();
     await expect(seedRow(t, USER_A, 'tasks', task)).rejects.toThrow(
-      /tasks_one_open_follow_up_per_lead|duplicate key/i,
+      /tasks_one_managed_follow_up_per_lead|duplicate key/i,
     );
   });
 
-  it('allows a new open follow-up once the old one is finished', async () => {
+  it('still refuses a second one once the first has been finished', async () => {
+    /**
+     * Why the index is not scoped to open tasks.
+     *
+     * The rule's task recurs: finishing it reopens it. An index that only looked
+     * at open tasks would let a second one be created the moment the first was
+     * marked done, which is precisely the duplicate this is meant to prevent.
+     */
     const leadId = await seedRow(t, USER_A, 'leads', { prospect_name: 'Taylor' });
     const first = await seedRow(t, USER_A, 'tasks', {
       title: 'Follow up with Taylor',
@@ -594,6 +602,7 @@ describe('a lead can have one open follow-up and no more', () => {
       status: 'open',
       due_date: '2026-10-12',
       lead_id: leadId,
+      follow_up_rule_managed: true,
     });
 
     await t.db.query('update tasks set status = $1 where id = $2', ['done', first]);
@@ -605,32 +614,72 @@ describe('a lead can have one open follow-up and no more', () => {
         status: 'open',
         due_date: '2026-10-19',
         lead_id: leadId,
+        follow_up_rule_managed: true,
+      }),
+    ).rejects.toThrow(/tasks_one_managed_follow_up_per_lead|duplicate key/i);
+  });
+
+  it('does not stop somebody keeping their own follow-up for the same lead', async () => {
+    // The rule owns one task. It does not own the person's task list.
+    const leadId = await seedRow(t, USER_A, 'leads', { prospect_name: 'Taylor' });
+    await seedRow(t, USER_A, 'tasks', {
+      title: 'Follow up with Taylor',
+      task_type: 'follow_up',
+      status: 'open',
+      due_date: '2026-10-12',
+      lead_id: leadId,
+      follow_up_rule_managed: true,
+    });
+    await expect(
+      seedRow(t, USER_A, 'tasks', {
+        title: 'Drop off the printed mockup',
+        task_type: 'follow_up',
+        status: 'open',
+        due_date: '2026-10-13',
+        lead_id: leadId,
       }),
     ).resolves.toBeTruthy();
   });
 
-  it('keeps the whole history of what was chased', async () => {
+  it('keeps the history in the activity log rather than in finished tasks', async () => {
+    /**
+     * Where the record of what was chased actually lives.
+     *
+     * One recurring task means there is no trail of finished follow-ups to read,
+     * which is fine, because a finished task was never the record. The activity
+     * log is, and nothing about the task lifecycle touches it.
+     */
     const leadId = await seedRow(t, USER_A, 'leads', { prospect_name: 'Taylor' });
-    for (const [due, status] of [
-      ['2026-09-01', 'done'],
-      ['2026-09-08', 'done'],
-      ['2026-09-15', 'skipped'],
-      ['2026-10-12', 'open'],
-    ] as const) {
-      await seedRow(t, USER_A, 'tasks', {
-        title: 'Follow up with Taylor',
-        task_type: 'follow_up',
-        status,
-        due_date: due,
+    const taskId = await seedRow(t, USER_A, 'tasks', {
+      title: 'Follow up with Taylor',
+      task_type: 'follow_up',
+      status: 'open',
+      due_date: '2026-09-01',
+      lead_id: leadId,
+      follow_up_rule_managed: true,
+    });
+
+    for (const day of ['2026-09-01', '2026-09-08', '2026-09-15']) {
+      await seedRow(t, USER_A, 'activity_events', {
+        occurred_at: `${day}T12:00:00.000Z`,
+        activity_type: 'follow_up_sent',
+        title: 'Follow-up sent',
         lead_id: leadId,
       });
+      // The one task moves on each time rather than a new one appearing.
+      await t.db.query('update tasks set due_date = $1 where id = $2', [day, taskId]);
     }
 
-    const all = await t.db.query<{ n: string }>(
+    const tasks = await t.db.query<{ n: string }>(
       'select count(*)::text as n from tasks where lead_id = $1',
       [leadId],
     );
-    expect(Number(all.rows[0].n)).toBe(4);
+    const history = await t.db.query<{ n: string }>(
+      'select count(*)::text as n from activity_events where lead_id = $1',
+      [leadId],
+    );
+    expect(Number(tasks.rows[0].n)).toBe(1);
+    expect(Number(history.rows[0].n)).toBe(3);
   });
 
   it('does not stop a lead having other kinds of open task', async () => {
@@ -641,6 +690,7 @@ describe('a lead can have one open follow-up and no more', () => {
       status: 'open',
       due_date: '2026-10-12',
       lead_id: leadId,
+      follow_up_rule_managed: true,
     });
     await expect(
       seedRow(t, USER_A, 'tasks', {
@@ -664,6 +714,7 @@ describe('a lead can have one open follow-up and no more', () => {
           status: 'open',
           due_date: '2026-10-12',
           lead_id: leadId,
+          follow_up_rule_managed: true,
         }),
       ).resolves.toBeTruthy();
     }
@@ -677,6 +728,7 @@ describe('a lead can have one open follow-up and no more', () => {
           task_type: 'follow_up',
           status: 'open',
           due_date: '2026-10-12',
+          follow_up_rule_managed: true,
         }),
       ).resolves.toBeTruthy();
     }

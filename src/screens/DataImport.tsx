@@ -6,6 +6,7 @@ import { ProgramPanel } from './ProgramPanel';
 import { IntegrationsPanel } from './IntegrationsPanel';
 import { GoogleSyncPanel } from './GoogleSyncPanel';
 import { LeadMirrorPanel } from './LeadMirrorPanel';
+import { CalendarPanel } from './CalendarPanel';
 import { Empty, Field, Notice, PageHead, Section } from '../components/primitives';
 import { csvNumber, matchHeader, parseCsv } from '../lib/csv';
 import { today } from '../lib/dates';
@@ -179,6 +180,8 @@ export function DataImport() {
       <GoogleSyncPanel />
 
       <LeadMirrorPanel />
+
+      <CalendarPanel />
 
       <Section
         title="Import a GA4 traffic export"
