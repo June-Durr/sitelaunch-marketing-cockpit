@@ -143,9 +143,14 @@ and should not be. They are separate tables so a plan can never be mistaken for 
 - One follow-up queue on Today, replacing the two sections that listed the same
   people twice, and an Action queue view on Pipeline alongside Board and Table.
 - `/pipeline?lead=<uuid>` opens one record, so the queue can link to a person.
-- Google Calendar V1: open follow-ups out to a dedicated calendar, one way, with
-  an event id derived from the task so a retry cannot double-book. Nothing is read
-  back, and nothing is ever deleted.
+- Google Calendar: open follow-ups out to the person's **own primary calendar**,
+  one way, under their own OAuth authorization, with an event id derived from the
+  task so a retry cannot double-book. Nothing is read back, nothing is ever
+  deleted, and no calendar is ever listed or searched.
+- Connecting it is one button. Nobody is asked to create a calendar, share one
+  with a service account, copy a calendar id, or supply a JSON key. The refresh
+  token lives in Supabase Vault behind functions only the service role can call,
+  and the browser never sees one.
 
 ### Explicitly out of scope for v1
 - Instagram / Facebook / LinkedIn Graph API OAuth.
@@ -515,8 +520,8 @@ connection with a multi-tenant abstraction nobody had tested.
    unchanged and reported.
 10. Logging a contact leaves exactly one open follow-up task for that lead, and a
     lead on hold, archived or set to no follow-up has nothing scheduled for it.
-11. No Google credential, service account address, private key, spreadsheet id or
-    calendar id appears anywhere in the built browser bundle.
+11. No Google credential, service account address, private key, spreadsheet id,
+    OAuth client or refresh token appears anywhere in the built browser bundle.
 12. Every eligible lead has exactly one open follow-up task, and three identical
     reconciliations leave the count unchanged.
 13. Completing a follow-up records one activity and reopens the same task on its
@@ -525,3 +530,13 @@ connection with a multi-tenant abstraction nobody had tested.
     Google completed but never reported does not become a second event.
 15. A failed calendar write keeps the stored event id and records a sanitized
     reason, so the next run updates rather than duplicates.
+16. Connecting a Google Calendar needs a real signed in session. The scheduler's
+    shared secret is refused, because it cannot consent on anybody's behalf.
+17. An authorization state is owner bound, expires in minutes, and can be spent
+    exactly once. A forged, replayed or expired callback changes nothing and is
+    answered identically to one that was never issued.
+18. `primary` is acceptable only when the credential is the person's own. The
+    service account is refused it outright.
+19. The scheduled calendar sync covers every owner who holds a token, and one
+    owner's expired authorization does not stop any other owner's sync.
+20. Disconnecting forgets the authorization and removes no calendar event.

@@ -176,6 +176,40 @@ export interface CalendarStatus {
 }
 
 /**
+ * Where to send somebody to approve the calendar connection.
+ *
+ * The URL is built by the server, because it carries the OAuth client id and a
+ * state the server has to have recorded first. A browser that invented its own
+ * would produce a state nothing can verify.
+ */
+export interface CalendarOAuthStart {
+  /** 'ready', 'not_configured', 'not_signed_in', or a transport word. */
+  status: string;
+  /** Google's consent screen. Null unless the status is 'ready'. */
+  authorizeUrl: string | null;
+  /** Already sanitized server side. Safe to display. */
+  error: string | null;
+}
+
+/** What disconnecting reported. */
+export interface CalendarDisconnectOutcome {
+  ok: boolean;
+  status: string;
+  /**
+   * Whether Google was also told to cancel the authorization.
+   *
+   * False does not mean the disconnection failed. The token is forgotten here
+   * either way, which is what actually stops the Cockpit writing anything. This
+   * says whether the courteous half worked, so the screen can be honest about it
+   * rather than implying more than happened.
+   */
+  revokedAtGoogle: boolean;
+  /** Always false in this version. Nothing is ever removed from a calendar. */
+  eventsRemoved: boolean;
+  error: string | null;
+}
+
+/**
  * The single data boundary of the application.
  *
  * Two adapters implement it in v1: browser-local storage (default, no account
@@ -258,6 +292,23 @@ export interface Repository {
    * session and nothing else.
    */
   triggerCalendarSync?(): Promise<CalendarSyncOutcome>;
+  /**
+   * Supabase adapter only: begin connecting this person's Google account.
+   *
+   * Returns somewhere to send them, and nothing else. No token, no client secret
+   * and no client id ever comes back through here, and the browser is not trusted
+   * to assemble the request: the server records a one-use state first, so a
+   * callback it did not start cannot be completed.
+   */
+  startCalendarOAuth?(): Promise<CalendarOAuthStart>;
+  /**
+   * Supabase adapter only: forget this person's Google authorization.
+   *
+   * Server side, because the token the browser is asking to have revoked is one
+   * the browser has never been allowed to see. Events already on the calendar are
+   * deliberately left alone.
+   */
+  disconnectCalendar?(): Promise<CalendarDisconnectOutcome>;
 }
 
 /** A fresh empty dataset. Use this rather than writing the shape out by hand. */

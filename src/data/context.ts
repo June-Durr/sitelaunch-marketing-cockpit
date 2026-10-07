@@ -1,9 +1,10 @@
 import { createContext, useContext } from 'react';
 import type { Dataset } from '../types/domain';
 import type {
-  AnalyticsProvider, AnalyticsStatus, CalendarStatus, CalendarSyncOutcome,
-  ImportReport, LeadMirrorAction, LeadMirrorOutcome, LeadMirrorStatus, NewRow,
-  ReconcileMode, RowPatch, SyncMode, SyncTriggerOutcome, TableMap, TableName,
+  AnalyticsProvider, AnalyticsStatus, CalendarDisconnectOutcome, CalendarOAuthStart,
+  CalendarStatus, CalendarSyncOutcome, ImportReport, LeadMirrorAction,
+  LeadMirrorOutcome, LeadMirrorStatus, NewRow, ReconcileMode, RowPatch, SyncMode,
+  SyncTriggerOutcome, TableMap, TableName,
 } from './repository';
 import { EMPTY_DATASET } from './repository';
 
@@ -49,6 +50,10 @@ export interface DataContextValue {
   loadCalendar: (() => Promise<CalendarStatus>) | null;
   /** Null in browser-local mode. Asks the server; never calls Google in here. */
   triggerCalendarSync: (() => Promise<CalendarSyncOutcome>) | null;
+  /** Null in browser-local mode. Returns somewhere to send them, not a token. */
+  startCalendarOAuth: (() => Promise<CalendarOAuthStart>) | null;
+  /** Null in browser-local mode. Forgets the authorization server side. */
+  disconnectCalendar: (() => Promise<CalendarDisconnectOutcome>) | null;
 }
 
 export const DataContext = createContext<DataContextValue>({
@@ -78,6 +83,8 @@ export const DataContext = createContext<DataContextValue>({
   triggerLeadMirror: null,
   loadCalendar: null,
   triggerCalendarSync: null,
+  startCalendarOAuth: null,
+  disconnectCalendar: null,
 });
 
 export function useData(): DataContextValue {

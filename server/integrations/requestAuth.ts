@@ -84,3 +84,31 @@ export async function resolveCaller(
   const userId = await verifyJwt(match[1]);
   return userId ? { ownerId: userId, via: 'user' } : null;
 }
+
+/**
+ * The owner of a real user session, and nothing else.
+ *
+ * WHY THIS IS NOT resolveCaller
+ *
+ * resolveCaller deliberately accepts the scheduler's shared secret as well as a
+ * person's session, because a nightly sync has no session. Connecting a Google
+ * account is the opposite situation: it is an act of consent by one particular
+ * person, and it decides whose calendar gets written to forever afterwards. A
+ * shared secret cannot consent on somebody's behalf, and a caller holding one
+ * must not be able to start or cancel an authorization for an arbitrary owner.
+ *
+ * So this path takes a Bearer token and only a Bearer token. A request carrying
+ * the cron header gets exactly the same refusal as a request carrying nothing.
+ */
+export async function requireUser(
+  headers: Headers | Record<string, string>,
+  verifyJwt: JwtVerifier,
+): Promise<string | null> {
+  const authorization = headerValue(headers, 'authorization');
+  if (!authorization) return null;
+
+  const match = /^Bearer\s+(.+)$/i.exec(authorization.trim());
+  if (!match) return null;
+
+  return verifyJwt(match[1]);
+}

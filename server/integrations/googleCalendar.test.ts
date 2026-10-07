@@ -17,6 +17,7 @@ import {
   MANAGED_BY_NOTE, pushFollowUpEvent, type CalendarDeps, type FollowUpEventInput,
 } from './googleCalendar.ts';
 import type { GoogleTokenSource } from './googleAuth.ts';
+import type { CalendarAuthMode } from './googleCalendar.ts';
 
 const TASK_ID = 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d';
 
@@ -53,12 +54,16 @@ function fakeCalendar(options: {
 } = {}) {
   const events = new Map<string, Record<string, unknown>>();
   const calls: string[] = [];
+  // The full addresses as well as the shapes, so a test can prove which
+  // calendar was actually written to and not merely that something was.
+  const urls: string[] = [];
 
   const fetchImpl = (async (url: string | URL, init?: RequestInit) => {
     const href = String(url);
     const method = init?.method ?? 'GET';
     const body = init?.body ? JSON.parse(String(init.body)) : {};
     calls.push(`${method} ${href.includes('/events/') ? 'one' : 'collection'}`);
+    urls.push(href);
 
     if (method === 'POST') {
       const id = String(body.id);
@@ -94,11 +99,14 @@ function fakeCalendar(options: {
     return new Response('{}', { status: 405 });
   }) as unknown as typeof fetch;
 
-  return { events, calls, fetchImpl };
+  return { events, calls, urls, fetchImpl };
 }
 
-const deps = (fetchImpl: typeof fetch, calendarId = 'sitelaunch@group.calendar.google.com'):
-  CalendarDeps => ({ tokenSource, calendarId, fetchImpl });
+const deps = (
+  fetchImpl: typeof fetch,
+  calendarId = 'sitelaunch@group.calendar.google.com',
+  mode: CalendarAuthMode = 'service_account',
+): CalendarDeps => ({ tokenSource, calendarId, mode, fetchImpl });
 
 /* ================================================================ the scope === */
 
@@ -113,20 +121,40 @@ describe('it asks for the narrowest scope that can write an event', () => {
 /* =========================================================== the target === */
 
 describe('it will only write to a calendar somebody configured', () => {
-  it('refuses the primary calendar, which is somebody’s actual diary', () => {
+  it('refuses the primary calendar to the service account, whoever that is', () => {
+    expect(isWritableCalendarId('primary', 'service_account')).toBe(false);
+    expect(isWritableCalendarId('PRIMARY', 'service_account')).toBe(false);
+    expect(isWritableCalendarId('  primary  ', 'service_account')).toBe(false);
+  });
+
+  it('refuses a calendar nobody named, in either mode', () => {
     for (const id of FORBIDDEN_CALENDAR_IDS) {
-      expect(isWritableCalendarId(id), id).toBe(false);
+      expect(isWritableCalendarId(id, 'service_account'), id).toBe(false);
+      expect(isWritableCalendarId(id, 'user_oauth'), id).toBe(false);
     }
-    expect(isWritableCalendarId('PRIMARY')).toBe(false);
-    expect(isWritableCalendarId('  primary  ')).toBe(false);
   });
 
   it('refuses no calendar at all rather than guessing one', () => {
-    expect(isWritableCalendarId(null)).toBe(false);
+    expect(isWritableCalendarId(null, 'service_account')).toBe(false);
+    expect(isWritableCalendarId(null, 'user_oauth')).toBe(false);
   });
 
   it('accepts a dedicated calendar id', () => {
-    expect(isWritableCalendarId('sitelaunch@group.calendar.google.com')).toBe(true);
+    expect(isWritableCalendarId('sitelaunch@group.calendar.google.com', 'service_account'))
+      .toBe(true);
+  });
+
+  /**
+   * The one difference between the two modes, stated as a test.
+   *
+   * It is not a relaxation. Under user_oauth the credential IS the person, they
+   * signed in to Google themselves and approved it, and their main calendar is
+   * the one they actually read. Under service_account nobody consented to
+   * anything, which is why the same id is refused.
+   */
+  it('accepts the primary calendar when the credential is the person own', () => {
+    expect(isWritableCalendarId('primary', 'user_oauth')).toBe(true);
+    expect(isWritableCalendarId('PRIMARY', 'user_oauth')).toBe(true);
   });
 
   it('throws rather than writing when the target is not configured', async () => {
@@ -136,6 +164,16 @@ describe('it will only write to a calendar somebody configured', () => {
     ).rejects.toThrow(/not explicitly configured/i);
     // And it never got as far as a request.
     expect(google.calls).toEqual([]);
+  });
+
+  it('writes to the primary calendar under a person own authorization', async () => {
+    const google = fakeCalendar();
+    const result = await pushFollowUpEvent(
+      deps(google.fetchImpl, 'primary', 'user_oauth'),
+      input(),
+    );
+    expect(result.outcome).toBe('created');
+    expect(google.urls[0]).toContain('/calendars/primary/events');
   });
 });
 

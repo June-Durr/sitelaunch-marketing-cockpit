@@ -16,10 +16,23 @@
  * and silently removing something from their week is not ours to do. See
  * calendar.ts, where that decision is written as a function so a test holds it.
  *
- * It also never writes to the primary calendar. The target is an explicit id from
- * configuration, and 'primary' is refused outright, because "I did not configure
- * it so I will use your default calendar" is how an app ends up writing twenty
- * events into somebody's actual diary.
+ * WHOSE CALENDAR, AND WHY THAT DEPENDS ON THE CREDENTIAL
+ *
+ * Writing to 'primary' means writing to whatever diary the credential happens to
+ * own. Whether that is reasonable depends entirely on who the credential belongs
+ * to, so the mode is required rather than defaulted:
+ *
+ *   service_account  'primary' is refused. The service account's own primary
+ *                    calendar is a robot's empty diary nobody will ever read, and
+ *                    a delegated service account's primary calendar is a real
+ *                    person's week that nobody asked permission for.
+ *   user_oauth       'primary' is the point. The person signed in to Google and
+ *                    approved this, and their main calendar is the one they
+ *                    actually look at. Asking them to create a second calendar
+ *                    and copy its id is setup work with nothing to show for it.
+ *
+ * Either way the id is explicit and the mode is explicit. There is no path that
+ * reaches a calendar by assumption.
  *
  * WHERE THE CREDENTIAL LIVES
  *
@@ -28,6 +41,7 @@
  */
 
 import type { GoogleTokenSource } from './googleAuth.ts';
+import { CALENDAR_OAUTH_SCOPE } from './googleOAuth.ts';
 
 /**
  * The narrowest scope that can write an event.
@@ -39,19 +53,53 @@ export const CALENDAR_SCOPE = 'https://www.googleapis.com/auth/calendar.events';
 
 const CALENDAR_ENDPOINT = 'https://www.googleapis.com/calendar/v3/calendars';
 
-/** A calendar id that must never be written to by default. */
-export const FORBIDDEN_CALENDAR_IDS = ['primary', 'default', ''];
+/**
+ * Who the credential belongs to, which decides whether 'primary' is allowed.
+ *
+ * Not a preference and not a feature flag. It is a statement about whose diary is
+ * on the other end of the token, and the two answers have opposite consequences.
+ */
+export type CalendarAuthMode = 'service_account' | 'user_oauth';
+
+/** The id meaning "the main calendar of whoever this credential is". */
+export const PRIMARY_CALENDAR_ID = 'primary';
+
+/** How the primary calendar is named on screen. Never a raw id. */
+export const PRIMARY_CALENDAR_LABEL = 'Primary Google Calendar';
 
 /**
- * Is this a calendar this integration is allowed to write to?
+ * Calendar ids no credential may ever be pointed at.
  *
- * Only an explicitly configured one. 'primary' resolves to whatever the
- * authenticated account's main calendar is, which for a service account is its
- * own, and for a delegated identity would be a real person's diary.
+ * 'default' and the empty string are always refused, because neither names
+ * anything a person chose. 'primary' is handled separately, since whether it is
+ * acceptable depends on the mode.
  */
-export function isWritableCalendarId(calendarId: string | null): boolean {
+export const FORBIDDEN_CALENDAR_IDS = ['default', ''];
+
+/**
+ * Is this a calendar this credential is allowed to write to?
+ *
+ * The mode is required. Leaving it optional would mean a future caller that
+ * forgot it got the permissive answer by accident, and the whole value of this
+ * function is that reaching somebody's real diary has to be deliberate.
+ */
+export function isWritableCalendarId(
+  calendarId: string | null,
+  mode: CalendarAuthMode,
+): boolean {
   if (calendarId === null) return false;
-  return !FORBIDDEN_CALENDAR_IDS.includes(calendarId.trim().toLowerCase());
+  const id = calendarId.trim().toLowerCase();
+  if (FORBIDDEN_CALENDAR_IDS.includes(id)) return false;
+  if (id === PRIMARY_CALENDAR_ID) return mode === 'user_oauth';
+  return true;
+}
+
+/** What to show for a destination, so 'primary' never appears as a raw id. */
+export function describeCalendarTarget(calendarId: string | null): string | null {
+  if (calendarId === null || calendarId.trim() === '') return null;
+  return calendarId.trim().toLowerCase() === PRIMARY_CALENDAR_ID
+    ? PRIMARY_CALENDAR_LABEL
+    : calendarId.trim();
 }
 
 /* ------------------------------------------------------------- the event id --- */
@@ -169,6 +217,8 @@ export function buildFollowUpEvent(input: FollowUpEventInput): GoogleEventBody {
 export interface CalendarDeps {
   tokenSource: GoogleTokenSource;
   calendarId: string;
+  /** Whose credential this is. Decides whether 'primary' is acceptable. */
+  mode: CalendarAuthMode;
   fetchImpl?: typeof fetch;
 }
 
@@ -177,6 +227,29 @@ export type PushOutcome = 'created' | 'updated';
 export interface PushResult {
   outcome: PushOutcome;
   eventId: string;
+  /**
+   * The Google address that owns the event, if Google said.
+   *
+   * This is the one honest way to learn which account is connected without
+   * asking for an identity scope the Cockpit has no other use for. Google puts it
+   * on the event it just accepted, so it is a fact about work that succeeded
+   * rather than a question we had to ask.
+   */
+  organizerEmail: string | null;
+}
+
+/** An email address out of an event body, or null. Nothing else is kept. */
+export function eventOrganizerEmail(body: unknown): string | null {
+  const event = body as {
+    organizer?: { email?: unknown };
+    creator?: { email?: unknown };
+  } | null;
+  for (const candidate of [event?.organizer?.email, event?.creator?.email]) {
+    if (typeof candidate === 'string' && /^[^@\s]+@[^@\s]+[.][^@\s]+$/.test(candidate)) {
+      return candidate.toLowerCase();
+    }
+  }
+  return null;
 }
 
 /**
@@ -215,7 +288,15 @@ async function call(
   init: { method: string; body?: unknown },
 ): Promise<{ status: number; body: unknown }> {
   const doFetch = deps.fetchImpl ?? fetch;
-  const token = await deps.tokenSource.getAccessToken([CALENDAR_SCOPE]);
+  /**
+   * The narrower scope when the credential is a person's own.
+   *
+   * events.owned covers calendars they own, which is all the Cockpit writes to.
+   * The service account path keeps events, because a calendar shared with it is
+   * one it has access to rather than one it owns.
+   */
+  const scope = deps.mode === 'user_oauth' ? CALENDAR_OAUTH_SCOPE : CALENDAR_SCOPE;
+  const token = await deps.tokenSource.getAccessToken([scope]);
   const url = `${CALENDAR_ENDPOINT}/${encodeURIComponent(deps.calendarId)}${path}`;
 
   const response = await doFetch(url, {
@@ -251,8 +332,12 @@ export async function pushFollowUpEvent(
   deps: CalendarDeps,
   input: FollowUpEventInput,
 ): Promise<PushResult> {
-  if (!isWritableCalendarId(deps.calendarId)) {
-    throw new Error('Refusing to write to a calendar that was not explicitly configured');
+  if (!isWritableCalendarId(deps.calendarId, deps.mode)) {
+    throw new Error(
+      deps.mode === 'service_account'
+        ? 'Refusing to write to a calendar that was not explicitly configured'
+        : 'Refusing to write to a calendar this authorization does not name',
+    );
   }
 
   const event = buildFollowUpEvent(input);
@@ -262,7 +347,11 @@ export async function pushFollowUpEvent(
 
   const created = await call(deps, '/events', { method: 'POST', body: event });
   if (created.status >= 200 && created.status < 300) {
-    return { outcome: 'created', eventId: event.id };
+    return {
+      outcome: 'created',
+      eventId: event.id,
+      organizerEmail: eventOrganizerEmail(created.body),
+    };
   }
 
   // 409 means this exact event is already there, which is a success for our
@@ -282,7 +371,11 @@ export async function pushFollowUpEvent(
       },
     });
     if (patched.status >= 200 && patched.status < 300) {
-      return { outcome: 'updated', eventId: event.id };
+      return {
+        outcome: 'updated',
+        eventId: event.id,
+        organizerEmail: eventOrganizerEmail(patched.body),
+      };
     }
     throw new Error(describeFailure('PATCH', patched));
   }

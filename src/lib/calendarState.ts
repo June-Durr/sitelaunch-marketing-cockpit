@@ -11,14 +11,14 @@ import type { CalendarSyncStatus, Task } from '../types/domain';
 export type CalendarState = 'synced' | 'pending' | 'error' | 'unavailable';
 
 export const CALENDAR_STATE_LABELS: Record<CalendarState, string> = {
-  synced: 'On the calendar',
+  synced: 'On your calendar',
   pending: 'Waiting to sync',
   error: 'Calendar sync failed',
   unavailable: 'Not on a calendar',
 };
 
 export const CALENDAR_STATE_EXPLANATIONS: Record<CalendarState, string> = {
-  synced: 'This follow-up has an event on the SiteLaunch calendar.',
+  synced: 'This follow-up has an entry on your Google Calendar.',
   pending: 'The date changed, so the calendar has not caught up with it yet.',
   error: 'The last attempt to write this to the calendar failed. The reason is on the task.',
   unavailable: 'Nothing has been put on a calendar for this one.',

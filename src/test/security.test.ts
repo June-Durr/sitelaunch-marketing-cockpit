@@ -19,6 +19,19 @@ const allSql = readdirSync(dir)
   .join('\n');
 
 /**
+ * The migrations other than the OAuth token store.
+ *
+ * 0010 is the one place in the schema that is allowed to name a refresh token at
+ * all, because it is the private store that holds one. It gets its own, stricter
+ * tests below rather than an exemption: a blanket text search over it would
+ * either pass by accident or force the store to be written dishonestly.
+ */
+const sqlWithoutTokenStore = readdirSync(dir)
+  .filter((f) => f.endsWith('.sql') && !f.startsWith('0010_'))
+  .map((f) => sqlFor(f))
+  .join('\n');
+
+/**
  * Every source file that actually ships, which is everything under src except the
  * tests. The tests are excluded because they name the forbidden strings in order
  * to assert they are absent, and would otherwise trip their own check.
@@ -167,14 +180,127 @@ describe('integration tables keep the same owner rule', () => {
     }
   });
 
-  it('stores no tokens anywhere in the schema', () => {
+  it('stores no tokens anywhere in the browser readable schema', () => {
     // A token column would be readable by the browser through RLS, which defeats
-    // the entire point of syncing server side.
+    // the entire point of syncing server side. 0010 is excluded and tested
+    // harder, because it is the private store that genuinely holds one.
     for (const forbidden of [
       'access_token', 'refresh_token', 'client_secret', 'api_key',
       'service_role', 'password',
     ]) {
-      expect(allSql.toLowerCase(), `schema mentions ${forbidden}`).not.toContain(forbidden);
+      expect(sqlWithoutTokenStore.toLowerCase(), `schema mentions ${forbidden}`)
+        .not.toContain(forbidden);
+    }
+  });
+});
+
+/* ------------------------------------------------------------------------ */
+
+/**
+ * The calendar token store, which is the only part of the schema that holds a
+ * secret at all.
+ *
+ * The rule everywhere else is "no token columns". Here the rule has to be
+ * different, because a scheduled calendar sync genuinely needs a refresh token
+ * weeks after somebody pressed a button. So the token lives in Vault, the tables
+ * that reference it are reachable by no browser role at all, and the only way in
+ * or out is through functions the service role alone may execute. These are
+ * asserted separately, because any one of them failing on its own would be
+ * enough to expose a token.
+ */
+describe('the calendar token store is reachable by nothing a browser can be', () => {
+  const sql = sqlFor('0010_calendar_oauth.sql');
+  const tables = ['calendar_oauth_states', 'calendar_oauth_tokens'];
+
+  it('keeps no token column on either table', () => {
+    for (const table of tables) {
+      const at = sql.indexOf(`create table ${table} (`);
+      expect(at, `${table} is not created`).toBeGreaterThan(-1);
+      const definition = sql.slice(at, sql.indexOf(');', at));
+      for (const forbidden of ['refresh_token', 'access_token', 'token text']) {
+        expect(definition.toLowerCase(), `${table} has a ${forbidden} column`)
+          .not.toContain(forbidden);
+      }
+    }
+    // What is stored instead: a hash of the state, and a pointer into Vault.
+    expect(sql).toContain('state_hash');
+    expect(sql).toContain('vault_secret_id');
+  });
+
+  it('turns row level security on and then grants no policy at all', () => {
+    for (const table of tables) {
+      expect(sql).toContain(`alter table ${table} enable row level security`);
+      expect(sql).toContain(`revoke all on ${table} from anon, authenticated`);
+      // RLS on with no policy denies every row to anon and authenticated. A
+      // policy on either of these would be a mistake, so its absence is
+      // asserted rather than assumed.
+      expect(sql, `${table} has a policy`).not.toContain(`on ${table} for select`);
+      expect(sql, `${table} has a policy`).not.toContain(`on ${table} for all`);
+    }
+  });
+
+  it('names a refresh token only inside the functions, never in the tables', () => {
+    /**
+     * Where the word appears matters more than how often.
+     *
+     * Everything before the first function is table and index DDL, which is what
+     * PostgREST exposes and what a leaked anon key would be pointed at. A single
+     * mention of a token up there would mean a column, so the assertion is about
+     * position rather than about a count.
+     */
+    const ddl = sql.slice(0, sql.indexOf('create or replace function')).toLowerCase();
+    expect(ddl).not.toContain('refresh_token');
+    expect(ddl).not.toContain('access_token');
+
+    // Inside the functions it is a parameter and a Vault secret name, and both
+    // of those are the point of the migration.
+    const bodies = sql.slice(sql.indexOf('create or replace function')).toLowerCase();
+    expect(bodies).toContain('p_refresh_token');
+    expect(bodies).toContain('vault.create_secret');
+  });
+
+  it('lets only the service role execute the token functions', () => {
+    /**
+     * The privileges themselves are proved against real Postgres in the pg
+     * schema test, which is the stronger check. This one guards the thing a text
+     * search can guard: that every function is security definer and appears in
+     * the list the grant loop walks, so a fifth function added later without
+     * being added to that list shows up here rather than silently ending up
+     * executable by anyone.
+     */
+    const signatures = [
+      'calendar_oauth_store_token(uuid, text)',
+      'calendar_oauth_read_token(uuid)',
+      'calendar_oauth_forget_token(uuid)',
+      'calendar_oauth_owners()',
+      'calendar_oauth_issue_state(uuid, text, integer)',
+      'calendar_oauth_consume_state(text)',
+      'calendar_oauth_prune_states(integer)',
+    ];
+    const created = [...sql.matchAll(/create or replace function (calendar_oauth_\w+)/g)]
+      .map((m) => m[1]);
+    expect(created.length).toBe(signatures.length);
+
+    for (const name of created) {
+      const at = sql.indexOf(`create or replace function ${name}`);
+      expect(sql.slice(at, at + 2500), `${name} is not security definer`)
+        .toContain('security definer');
+      expect(signatures.some((sig) => sig.startsWith(`${name}(`)), `${name} is not granted`)
+        .toBe(true);
+    }
+
+    for (const sig of signatures) expect(sql).toContain(`'${sig}'`);
+    expect(sql).toContain("revoke all on function %s from public");
+    expect(sql).toContain("revoke all on function %s from anon, authenticated");
+    expect(sql).toContain("grant execute on function %s to service_role");
+  });
+
+  it('is never reached from the browser bundle', () => {
+    for (const name of [
+      'calendar_oauth_store_token', 'calendar_oauth_read_token',
+      'calendar_oauth_forget_token', 'calendar_oauth_states', 'calendar_oauth_tokens',
+    ]) {
+      expect(shippedSource, `src names ${name}`).not.toContain(name);
     }
   });
 });
@@ -646,6 +772,47 @@ describe('the built bundle carries no Google credential', () => {
     }
   });
 
+  /**
+   * 13. No OAuth credential reaches what ships.
+   *
+   * The client secret is the one that would matter most: with it and a redirect
+   * uri, somebody else can run the whole consent flow as SiteLaunch. The client
+   * id is public by design and still absent, because the browser has no use for
+   * it: the server builds the authorize url, since it has to record the state
+   * first anyway.
+   */
+  it('contains no OAuth client, token or Vault reference', () => {
+    /**
+     * Google's OAuth, specifically.
+     *
+     * 'refresh_token' and 'grant_type' are deliberately not on this list:
+     * supabase-js manages the signed in person's own Supabase session with a
+     * refresh token, so those strings are in the bundle legitimately and
+     * forbidding them would make this test fail for the wrong reason. What must
+     * not be there is anything that could act as SiteLaunch against Google.
+     */
+    const forbidden = [
+      'GOOGLE_OAUTH_CLIENT_ID',
+      'GOOGLE_OAUTH_CLIENT_SECRET',
+      'GOOGLE_OAUTH_REDIRECT_URI',
+      'apps.googleusercontent.com',
+      'client_secret',
+      'calendar_oauth_store_token',
+      'calendar_oauth_read_token',
+      'calendar_oauth_tokens',
+      'vault.decrypted_secrets',
+      'accounts.google.com/o/oauth2',
+      'googleapis.com/auth/calendar',
+    ];
+
+    for (const file of builtFiles) {
+      const text = readFileSync(`dist/${file}`, 'utf8');
+      for (const needle of forbidden) {
+        expect(text.includes(needle), `dist/${file} contains "${needle}"`).toBe(false);
+      }
+    }
+  });
+
   it('does carry the two public Supabase values, which are meant to be there', () => {
     // The counterpart to every assertion above: this proves the search is
     // actually looking at the shipped JavaScript and would find a string in it.
@@ -707,16 +874,217 @@ describe('the follow-up calendar keeps every credential server side', () => {
   });
 });
 
+/**
+ * 4. A token has no path to a browser, and no path to a log.
+ *
+ * Three separate claims, because any one of them failing on its own would be
+ * enough: the browser never receives one, the browser never asks for one, and a
+ * failure never prints one. The database half of this is in the pg tests, which
+ * prove it against real Postgres rather than against a text search.
+ */
+describe('the calendar authorization never reaches a browser', () => {
+  const start = readFileSync('supabase/functions/calendar-oauth/index.ts', 'utf8');
+  const callback = readFileSync('supabase/functions/calendar-oauth-callback/index.ts', 'utf8');
+  const store = readFileSync('supabase/functions/_shared/calendarOAuthStore.ts', 'utf8');
+  const repo = readFileSync('src/data/supabaseRepository.ts', 'utf8');
+
+  it('never names a token or a client secret anywhere in src', () => {
+    for (const forbidden of [
+      'refresh_token', 'refreshToken', 'client_secret', 'clientSecret',
+      'GOOGLE_OAUTH_CLIENT_SECRET', 'GOOGLE_OAUTH_CLIENT_ID',
+    ]) {
+      expect(shippedSource, `src names ${forbidden}`).not.toContain(forbidden);
+    }
+  });
+
+  it('never stores anything about the connection in browser storage', () => {
+    // A token in localStorage survives the tab, the session and the sign out.
+    const panel = readFileSync('src/screens/CalendarPanel.tsx', 'utf8');
+    for (const forbidden of ['localStorage', 'sessionStorage', 'document.cookie']) {
+      expect(panel, `the panel uses ${forbidden}`).not.toContain(forbidden);
+    }
+  });
+
+  it('builds the authorize url on the server, so the browser needs no client id', () => {
+    expect(start).toContain('buildAuthorizeUrl');
+    expect(repo).not.toContain('buildAuthorizeUrl');
+    expect(repo).not.toContain('accounts.google.com/o/oauth2');
+    // The browser asks for a url and checks where it points. It does not assemble
+    // one, because the state in it has to have been recorded first.
+    expect(repo).toContain('calendar-oauth');
+    expect(repo).toContain("hostname === 'accounts.google.com'");
+  });
+
+  it('returns a status and a url from the start call, and nothing else', () => {
+    const returned = start.slice(start.indexOf("status: 'ready'"), start.indexOf("status: 'ready'") + 200);
+    expect(returned).toContain('authorizeUrl');
+    expect(returned).not.toContain('token');
+  });
+
+  it('exchanges the code server side, in the callback and nowhere else', () => {
+    expect(callback).toContain('exchangeAuthorizationCode');
+    expect(shippedSource).not.toContain('exchangeAuthorizationCode');
+  });
+
+  it('hands the token straight to the store without returning or logging it', () => {
+    // The only thing done with the exchanged token is storing it.
+    expect(callback).toContain('storeRefreshToken(client, ownerId, tokens.refreshToken)');
+    /**
+     * And nothing is ever interpolated into a log here.
+     *
+     * The test looks for the template placeholder rather than for the word, so a
+     * fixed message that happens to say "code" passes and a message that splices
+     * the code in does not.
+     */
+    for (const call of callback.match(/safeLog\([^;]*\)/g) ?? []) {
+      expect(call, call).not.toContain('tokens.');
+      expect(call, call).not.toContain('${code');
+      expect(call, call).not.toContain('${state');
+      expect(call, call).not.toContain('${refresh');
+      expect(call, call).not.toContain('oauth.client');
+    }
+  });
+
+  it('reads a token only through the private Vault helpers', () => {
+    expect(store).toContain('calendar_oauth_read_token');
+    // Never a direct select against a table, which PostgREST would expose.
+    expect(store).not.toContain("from('calendar_oauth_tokens')");
+    expect(store).not.toContain('vault.');
+  });
+
+  it('hands the token back on disconnect only so Google can be told', () => {
+    const fn = readFileSync('supabase/functions/calendar-oauth/index.ts', 'utf8');
+    const block = fn.slice(fn.indexOf('const token = await forgetRefreshToken'));
+    expect(block.slice(0, 200)).toContain('revokeRefreshToken(token)');
+    // And the response says whether Google was told, not what it was told.
+    expect(fn).toContain('revokedAtGoogle: revoked');
+    expect(fn).not.toContain('token: token');
+  });
+});
+
+/**
+ * 1. Consent needs a session, and 12. disconnecting deletes no event.
+ */
+describe('connecting and disconnecting are acts of one signed in person', () => {
+  const fn = readFileSync('supabase/functions/calendar-oauth/index.ts', 'utf8');
+  const callback = readFileSync('supabase/functions/calendar-oauth-callback/index.ts', 'utf8');
+
+  it('guards the start and disconnect with requireUser, not resolveCaller', () => {
+    expect(fn).toContain('requireUser(request.headers, verifyJwt)');
+    // resolveCaller accepts the scheduler's shared secret, which cannot consent
+    // on anybody's behalf.
+    expect(fn).not.toContain('resolveCaller');
+    expect(fn).not.toContain('SYNC_OWNER_ID');
+  });
+
+  it('takes the owner from the verified session and never from the body', () => {
+    const body = fn.slice(fn.indexOf('let body'), fn.indexOf('let body') + 400);
+    expect(body).toContain('action');
+    expect(body).not.toContain('owner');
+    expect(fn).not.toContain('body.ownerId');
+    expect(fn).not.toContain('body.owner_id');
+  });
+
+  it('validates the state before any write and before the code exchange', () => {
+    const consumeAt = callback.indexOf('consumeOAuthState');
+    const exchangeAt = callback.indexOf('exchangeAuthorizationCode(oauth');
+    const writeAt = callback.indexOf("from('integration_connections')");
+    expect(consumeAt).toBeGreaterThan(-1);
+    expect(consumeAt).toBeLessThan(exchangeAt);
+    expect(consumeAt).toBeLessThan(writeAt);
+  });
+
+  it('redirects only through the configured app, never through a parameter', () => {
+    expect(callback).toContain('safeReturnUrl');
+    expect(callback).toContain("env('COCKPIT_APP_URL')");
+    // The destination is a literal path plus one word from a fixed set. Nothing
+    // from the request chooses where a browser goes.
+    expect(callback).toContain("const RETURN_PATH = '/data'");
+    expect(callback).not.toContain("searchParams.get('redirect");
+    expect(callback).not.toContain("searchParams.get('return");
+    expect(callback).not.toContain("searchParams.get('next");
+  });
+
+  it('does not echo Google error text back into the address bar', () => {
+    // It arrived in a query string that anybody can write.
+    const refusal = callback.slice(callback.indexOf('if (googleError)'), callback.indexOf('if (googleError)') + 250);
+    expect(refusal).toContain("finish('refused')");
+    expect(refusal).not.toContain('googleError}');
+  });
+
+  it('removes no calendar event when somebody disconnects', () => {
+    const block = fn.slice(fn.indexOf("if (action === 'disconnect')"));
+    expect(block).not.toContain('DELETE');
+    expect(block).not.toContain('calendar/v3');
+    expect(block).not.toContain('external_event_id');
+    // And it says so in the response rather than letting the screen imply it.
+    expect(block).toContain('eventsRemoved: false');
+  });
+
+  it('keeps the service account out of the calendar path entirely', () => {
+    const sync = readFileSync('supabase/functions/sync-calendar/index.ts', 'utf8');
+    for (const text of [fn, callback, sync]) {
+      expect(text).not.toContain('GOOGLE_SERVICE_ACCOUNT_KEY');
+      expect(text).not.toContain('ServiceAccountTokenSource');
+    }
+  });
+});
+
 describe('the calendar sync will not write where it was not told to', () => {
   const provider = readFileSync('server/integrations/googleCalendar.ts', 'utf8');
   const fn = readFileSync('supabase/functions/sync-calendar/index.ts', 'utf8');
 
   it('refuses the primary calendar in code, not only in a comment', () => {
     expect(provider).toContain('FORBIDDEN_CALENDAR_IDS');
-    expect(provider).toContain("'primary'");
+    expect(provider).toContain('PRIMARY_CALENDAR_ID');
     expect(provider).toContain('isWritableCalendarId');
-    // And the function checks before it does anything at all.
-    expect(fn).toContain('isWritableCalendarId');
+    /**
+     * The check is inside pushFollowUpEvent, which is the only thing that writes.
+     *
+     * It used to be in the Edge Function as well. Putting it one layer down is
+     * stronger, not weaker: a future caller cannot reach Google without passing
+     * through the guard, whereas a duplicated check in a handler is one somebody
+     * can forget to copy into the next handler.
+     */
+    const guard = provider.slice(provider.indexOf('export async function pushFollowUpEvent'));
+    expect(guard.slice(0, 400)).toContain('isWritableCalendarId(deps.calendarId, deps.mode)');
+  });
+
+  /**
+   * Primary is allowed for exactly one kind of credential, and the sync says
+   * which kind it is holding.
+   *
+   * The whole safety of writing to 'primary' rests on the mode being honest. A
+   * sync that wrote primary while claiming to be the service account would be
+   * putting events in a robot's diary at best and somebody's unconsented diary
+   * at worst, so the pairing is asserted rather than trusted.
+   */
+  it('reaches the primary calendar only under a person own authorization', () => {
+    const sync = readFileSync('server/integrations/calendarSync.ts', 'utf8');
+    expect(sync).toContain("mode: 'user_oauth'");
+    expect(sync).not.toContain("mode: 'service_account'");
+    expect(sync).toContain('PRIMARY_CALENDAR_ID');
+    // There is no configured calendar id in this path at all, so there is
+    // nothing to fall back from.
+    expect(sync).not.toContain('GOOGLE_CALENDAR_ID');
+    // And neither the module nor the function holds a service account key.
+    for (const text of [sync, fn]) {
+      expect(text).not.toContain('GOOGLE_SERVICE_ACCOUNT_KEY');
+      expect(text).not.toContain('ServiceAccountTokenSource');
+    }
+  });
+
+  /**
+   * The service account is still refused the primary calendar.
+   *
+   * Sprint B's rule has not been relaxed, it has been made conditional on
+   * something real. If this ever passes for 'service_account', a credential
+   * nobody consented to has been pointed at a diary.
+   */
+  it('still refuses primary to the service account', () => {
+    const at = provider.indexOf('export function isWritableCalendarId');
+    const body = provider.slice(at, provider.indexOf('/** What to show', at));
+    expect(body).toContain("mode === 'user_oauth'");
   });
 
   it('never deletes an event', () => {

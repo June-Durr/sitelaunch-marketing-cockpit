@@ -6,7 +6,8 @@
 
 import type { Dataset } from '../types/domain';
 import type {
-  AnalyticsProvider, AnalyticsStatus, CalendarStatus, CalendarSyncOutcome,
+  AnalyticsProvider, AnalyticsStatus, CalendarDisconnectOutcome, CalendarOAuthStart,
+  CalendarStatus, CalendarSyncOutcome,
   ImportReport, LeadMirrorAction, LeadMirrorOutcome, LeadMirrorStatus, NewRow,
   ReconcileMode, Repository, RowPatch, SyncMode, SyncTriggerOutcome, TableMap,
   TableName,
@@ -316,9 +317,9 @@ export function createSupabaseRepository(): Repository {
     /**
      * Ask the server to put the open follow-ups on the calendar.
      *
-     * Sends this browser's session and nothing else. The Google credential and
-     * the calendar id live in the function's own secrets, so pressing this
-     * button never puts either in a browser.
+     * Sends this browser's session and nothing else. This person's Google
+     * authorization lives behind the server's Vault helpers, so pressing this
+     * button never puts a token in a browser.
      */
     async triggerCalendarSync(): Promise<CalendarSyncOutcome> {
       const empty = (status: string, error: string): CalendarSyncOutcome => ({
@@ -363,6 +364,128 @@ export function createSupabaseRepository(): Repository {
         updated: asNumber(body.updated),
         failed: asNumber(body.failed),
         tasks: asNumber(body.tasks),
+        error: typeof body.error === 'string' ? body.error : null,
+      };
+    },
+
+    /**
+     * Begin connecting this person's own Google account.
+     *
+     * The browser gets back a URL to Google and nothing else. It does not build
+     * that URL, because it carries a state the server has to have recorded first,
+     * and a state the server never issued is one it must refuse. It does not hold
+     * the OAuth client secret either, which is why the exchange happens in a
+     * function and not here.
+     */
+    async startCalendarOAuth(): Promise<CalendarOAuthStart> {
+      const { data: session } = await db.auth.getSession();
+      const token = session.session?.access_token;
+      if (!token) {
+        return { status: 'not_signed_in', authorizeUrl: null, error: 'Sign in first.' };
+      }
+
+      let response: Response;
+      try {
+        response = await fetch(`${functionsBaseUrl()}/calendar-oauth`, {
+          method: 'POST',
+          headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+          body: JSON.stringify({ action: 'start' }),
+        });
+      } catch {
+        return {
+          status: 'unreachable',
+          authorizeUrl: null,
+          error: 'Could not reach the connection function. It may not be deployed yet.',
+        };
+      }
+
+      let body: Record<string, unknown> = {};
+      try {
+        body = (await response.json()) as Record<string, unknown>;
+      } catch {
+        body = {};
+      }
+
+      /**
+       * Only an address on Google's own consent host is accepted.
+       *
+       * The server builds it, so this should never matter. It is checked anyway
+       * because this value is about to become a navigation, and a navigation
+       * taken from a response is worth one line of paranoia.
+       */
+      const raw = typeof body.authorizeUrl === 'string' ? body.authorizeUrl : null;
+      let authorizeUrl: string | null = null;
+      if (raw) {
+        try {
+          const parsed = new URL(raw);
+          if (parsed.protocol === 'https:' && parsed.hostname === 'accounts.google.com') {
+            authorizeUrl = parsed.toString();
+          }
+        } catch {
+          authorizeUrl = null;
+        }
+      }
+
+      return {
+        status:
+          typeof body.status === 'string'
+            ? body.status
+            : response.ok
+              ? 'unknown'
+              : `http_${response.status}`,
+        authorizeUrl: response.ok ? authorizeUrl : null,
+        error: typeof body.error === 'string' ? body.error : null,
+      };
+    },
+
+    /**
+     * Forget this person's Google authorization.
+     *
+     * Server side, because the token being revoked is one this browser has never
+     * been allowed to see. Nothing is removed from the calendar: events already
+     * in somebody's week stay there, and the response says so plainly rather than
+     * letting the screen imply otherwise.
+     */
+    async disconnectCalendar(): Promise<CalendarDisconnectOutcome> {
+      const fail = (status: string, error: string): CalendarDisconnectOutcome => ({
+        ok: false, status, revokedAtGoogle: false, eventsRemoved: false, error,
+      });
+
+      const { data: session } = await db.auth.getSession();
+      const token = session.session?.access_token;
+      if (!token) return fail('not_signed_in', 'Sign in first.');
+
+      let response: Response;
+      try {
+        response = await fetch(`${functionsBaseUrl()}/calendar-oauth`, {
+          method: 'POST',
+          headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+          body: JSON.stringify({ action: 'disconnect' }),
+        });
+      } catch {
+        return fail(
+          'unreachable',
+          'Could not reach the connection function. It may not be deployed yet.',
+        );
+      }
+
+      let body: Record<string, unknown> = {};
+      try {
+        body = (await response.json()) as Record<string, unknown>;
+      } catch {
+        body = {};
+      }
+
+      return {
+        ok: response.ok,
+        status:
+          typeof body.status === 'string'
+            ? body.status
+            : response.ok
+              ? 'unknown'
+              : `http_${response.status}`,
+        revokedAtGoogle: body.revokedAtGoogle === true,
+        eventsRemoved: body.eventsRemoved === true,
         error: typeof body.error === 'string' ? body.error : null,
       };
     },

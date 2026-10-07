@@ -67,7 +67,8 @@ describe('a fresh database takes every migration in order', () => {
     ).map((r) => r.table_name);
 
     expect(tables).toEqual([
-      'accounts', 'activity_events', 'content_items', 'ga4_daily_traffic',
+      'accounts', 'activity_events', 'calendar_oauth_states',
+      'calendar_oauth_tokens', 'content_items', 'ga4_daily_traffic',
       'integration_connections', 'leads', 'performance_snapshots',
       'recommendations', 'search_console_daily', 'sync_runs', 'tasks',
       'traffic_snapshots',
@@ -99,6 +100,33 @@ describe('a fresh database takes every migration in order', () => {
             where option_name = 'security_invoker'), 'false') <> 'true'`,
     );
     expect(leaky).toEqual([]);
+  });
+
+  it('gives the two OAuth tables no policy at all, which denies everything', async () => {
+    /**
+     * These two are not owner-scoped, they are nobody-scoped.
+     *
+     * Row level security with no policy matches no row for anon or authenticated,
+     * so every read and write is refused. The service role bypasses it, which is
+     * how the Edge Functions reach them and nothing else does. A policy on either
+     * of these would be a mistake, so the absence is asserted rather than assumed.
+     */
+    for (const table of ['calendar_oauth_states', 'calendar_oauth_tokens']) {
+      const policies = await rows(
+        `select policyname from pg_policies
+          where schemaname = 'public' and tablename = $1`,
+        [table],
+      );
+      expect(policies, `${table} has a policy`).toEqual([]);
+
+      const protection = await rows(
+        `select relrowsecurity from pg_class c
+          join pg_namespace n on n.oid = c.relnamespace
+          where n.nspname = 'public' and c.relname = $1`,
+        [table],
+      );
+      expect(protection[0]?.relrowsecurity, `${table} has RLS off`).toBe(true);
+    }
   });
 
   it('turns row level security on for every owned table', async () => {

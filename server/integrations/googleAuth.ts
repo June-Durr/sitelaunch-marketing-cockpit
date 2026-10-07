@@ -215,3 +215,75 @@ function base64UrlBytes(bytes: Uint8Array): string {
   for (const byte of bytes) binary += String.fromCharCode(byte);
   return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
+
+/**
+ * A token source backed by one person's own Google authorization.
+ *
+ * WHY THIS IS A SECOND IMPLEMENTATION RATHER THAN A CHANGE TO THE FIRST
+ *
+ * The comment at the top of this file predicted exactly this: GA4, Search Console
+ * and the Sheet mirror are SiteLaunch's own properties and stay on the service
+ * account, while a person's calendar is theirs and needs their consent. Both
+ * kinds of credential now exist at once, so both implementations of
+ * GoogleTokenSource exist at once, and the code that builds a calendar event
+ * cannot tell which one it was handed.
+ *
+ * WHAT IT HOLDS AND FOR HOW LONG
+ *
+ * A refresh token, for the life of one request. It arrives from the Vault helpers
+ * in migration 0010, is swapped for a short lived access token, and is never
+ * returned, logged or written anywhere by anything in this class.
+ *
+ * WHY describe() TAKES A LABEL
+ *
+ * The scopes requested deliberately do not include the person's email address, so
+ * this class genuinely does not know whose account it is. The label is whatever
+ * the caller already learned honestly, such as the organizer address Google put
+ * on an event it accepted, and null is the truthful answer until then.
+ */
+export class UserRefreshTokenSource implements GoogleTokenSource {
+  private readonly refresh: (refreshToken: string) => Promise<{
+    accessToken: string;
+    expiresInSeconds: number;
+  }>;
+  private readonly refreshToken: string;
+  private readonly label: string | null;
+  private readonly now: () => number;
+  private cached: { token: string; expiresAt: number } | null = null;
+
+  constructor(
+    refreshToken: string,
+    refresh: (token: string) => Promise<{ accessToken: string; expiresInSeconds: number }>,
+    options: { label?: string | null; now?: () => number } = {},
+  ) {
+    this.refreshToken = refreshToken;
+    this.refresh = refresh;
+    this.label = options.label ?? null;
+    this.now = options.now ?? (() => Date.now());
+  }
+
+  describe(): string {
+    return this.label ?? 'Connected Google account';
+  }
+
+  /**
+   * The scopes argument is accepted and not sent.
+   *
+   * A refresh token already carries the scopes the person approved, and Google
+   * will not widen them on refresh. Asking for more here would not grant more; it
+   * would just be a lie in the signature. The caller's list is still worth having
+   * because it is what the service account path needs, and one interface serving
+   * both is the point.
+   */
+  async getAccessToken(_scopes: string[]): Promise<string> {
+    const nowSecs = Math.floor(this.now() / 1000);
+    if (this.cached && this.cached.expiresAt > nowSecs) return this.cached.token;
+
+    const result = await this.refresh(this.refreshToken);
+    this.cached = {
+      token: result.accessToken,
+      expiresAt: nowSecs + Math.max(0, result.expiresInSeconds - EXPIRY_MARGIN_SECS),
+    };
+    return result.accessToken;
+  }
+}

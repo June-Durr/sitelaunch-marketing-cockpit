@@ -18,6 +18,7 @@ is not.
 | 6 | `migrations/0007_lead_mirror.sql` | Relationship follow-up columns, the three uniqueness indexes, and `lead_follow_up_state(as_of)`. Creates no table. |
 | 7 | `migrations/0008_mirror_conflict_target.sql` | Makes the activity external-key index usable as an `ON CONFLICT` target. Same rule, no predicate. |
 | 8 | `migrations/0009_follow_up_tasks.sql` | The recurring follow-up task: a column saying the rule owns it, one per lead, and `reconcile_follow_up_tasks(dry_run)`. Creates no table. |
+| 9 | `migrations/0010_calendar_oauth.sql` | The private Google Calendar token store: the one-use authorization states, the Vault pointer per owner, and the seven service-role-only functions that are the only way in. |
 
 Migration 0006 starts nothing. It installs what a schedule needs and leaves the two
 `cron.schedule` statements commented at the bottom of the file, to be run by hand once
@@ -174,7 +175,7 @@ property and Search Console site.
 ## Deploying the sync functions
 
 ```
-supabase functions deploy sync-ga4 sync-search-console sync-lead-mirror sync-calendar --use-api
+supabase functions deploy sync-ga4 sync-search-console sync-lead-mirror sync-calendar calendar-oauth calendar-oauth-callback --use-api
 ```
 
 Both functions must be deployed with JWT verification off. That now comes from
@@ -206,7 +207,14 @@ the platform. These have to be set with `supabase secrets set`:
 | `GA4_PROPERTY_ID` | GA4 property id. Not a secret, but it lives here with the rest. |
 | `SEARCH_CONSOLE_SITE_URL` | The Search Console property, exactly as Google writes it. |
 | `GOOGLE_SHEETS_SPREADSHEET_ID` | The lead mirror spreadsheet. Not a secret either, but it is configuration and belongs in one place rather than in a bundle nobody can rotate. |
-| `GOOGLE_CALENDAR_ID` | The dedicated follow-up calendar. Without it the calendar sync refuses rather than writing to the primary calendar. |
+| `GOOGLE_OAUTH_CLIENT_ID` | The Google OAuth client the calendar connection uses. Public by design, and still kept here: the browser never needs it, because the server builds the authorize url. |
+| `GOOGLE_OAUTH_CLIENT_SECRET` | The other half of that client. With this and the redirect uri, somebody else could run the whole consent flow as SiteLaunch. |
+| `GOOGLE_OAUTH_REDIRECT_URI` | Must match an Authorized redirect URI on the Google client, exactly. |
+| `COCKPIT_APP_URL` | Where the callback sends a browser afterwards. The only acceptable destination, so there is no open redirect. |
+
+`GOOGLE_CALENDAR_ID` is gone. The calendar is no longer a dedicated one shared
+with the service account; it is each person's own primary calendar, under their
+own authorization. See **The follow-up calendar** below.
 
 And these two in Vault, read by `trigger_analytics_sync` at call time:
 
@@ -404,22 +412,88 @@ the same fixtures and fails if they disagree about a single lead.
 
 ## The follow-up calendar
 
-`supabase/functions/sync-calendar` writes every open follow-up task onto a
-dedicated Google Calendar, as an all day entry. One direction only.
+`supabase/functions/sync-calendar` writes every open follow-up task onto the
+connected person's **own primary Google Calendar**, as an all day entry. One
+direction only.
 
-### What it needs
+### Why not the service account
 
-- `GOOGLE_SERVICE_ACCOUNT_KEY`, the same secret everything else already uses. No
-  second credential, and no new JSON key.
-- `GOOGLE_CALENDAR_ID`, set with `supabase secrets set`. Without it the function
-  answers `not_configured` and writes nothing.
-- A calendar made for this, shared with the service account's own address with
-  permission to **make changes to events**.
+Because a calendar is not SiteLaunch's property. Using the service account for it
+would mean one of two things: asking every customer to create a calendar and
+share it with a robot they have never heard of, or domain-wide delegation, which
+hands one credential the right to read every calendar in an organisation. The
+first is setup work with nothing to show for it, the second is a credential
+nobody consented to. So the calendar uses the customer's own authorization, and
+the service account stays limited to GA4, Search Console and the Sheet mirror.
+
+### What somebody has to do
+
+Press **Connect Google Calendar** once, sign in to Google, and approve one
+permission. That is all. They are never asked to create a calendar, copy an id,
+share anything, or supply a key.
+
+### What the deployment has to have
+
+- An OAuth client of type **Web application** in Google Cloud, with the callback
+  as an Authorized redirect URI.
+- `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`,
+  `GOOGLE_OAUTH_REDIRECT_URI` and `COCKPIT_APP_URL` as Edge Function secrets.
+  Without the first three the functions answer `not_configured` and write
+  nothing.
 - The Google Calendar API enabled on the project.
+- Migration `0010` applied.
 
-The scope is `auth/calendar.events`, which is the narrowest one that can write an
-event. The wider `auth/calendar` also grants creating, sharing and deleting whole
-calendars, and nothing here needs that.
+No service account key is involved in this path at all.
+
+### The one scope
+
+`auth/calendar.events.owned`. It permits creating and changing events on
+calendars the person owns, and nothing else: it cannot list their calendars,
+cannot read anybody else's, and cannot touch sharing or calendar settings. The
+full `auth/calendar` scope is deliberately not requested, and neither is
+`auth/calendar.events`, which extends to calendars somebody merely has write
+access to.
+
+### Where the token lives
+
+In Supabase Vault, pointed at by one row per owner in `calendar_oauth_tokens`.
+Both of 0010's tables have row level security on and **no policy at all**, which
+denies every read and write to `anon` and `authenticated`; privileges are revoked
+besides. The only way in or out is seven `security definer` functions granted to
+`service_role` alone, which is held by the Edge Functions and by nothing a browser
+can be. `integration_connections`, which the browser does read, has no token
+column by design.
+
+### How an authorization is proved genuine
+
+A 32-byte random state, stored only as its SHA-256, consumed by one conditional
+`UPDATE` that also checks it is unused and unexpired. That statement is the
+authentication: Postgres serialises two callbacks arriving together, the first
+matches and the second matches nothing. A signature could prove we issued a value
+but never that it had not already been spent, which is the attack that matters.
+
+Forged, replayed, expired and never issued all answer identically, because they
+are all "no" and telling them apart would describe the table to whoever is
+probing it.
+
+### Why the callback has no platform JWT check
+
+Google redirects a browser to it, carrying a code and a state and no Supabase
+session, so `verify_jwt = true` would reject every real callback before the body
+ran. It does its own check first instead: the state is consumed before any
+database write and before the code is exchanged.
+
+### Several owners, independently
+
+The scheduled run walks every owner who holds a token, which is the token table
+and not a configured id. `SYNC_OWNER_ID` is deliberately not used here: a fixed
+owner would mean the nightly run wrote one person's follow-ups and silently
+ignored everybody else's, while every screen still said it succeeded. One owner's
+expired authorization is recorded against their own connection row and does not
+stop the next owner's sync.
+
+An on-demand sync covers the signed in person and nobody else. The owner comes
+from the verified session, never from the request body.
 
 ### Why a retry cannot double-book
 
@@ -435,8 +509,12 @@ asks for the same id, Google answers 409, and the sync patches instead.
 - Delete an event. Not when a task is finished, not when a lead is archived, not
   as a tidy-up. The calendar may be shared, and removing something from somebody
   else's week is not this app's decision.
-- Write to `primary`. That id is refused outright, so a missing configuration
-  cannot turn into twenty events in a real diary.
+- Write to `primary` under the service account. That pairing is refused outright
+  by `isWritableCalendarId`, which takes the credential's mode as a required
+  argument. `primary` is acceptable only when the credential is the person's own.
+- List, search, or read a calendar. Every request addresses one event id computed
+  from one Cockpit task id, so an unrelated personal event is not something this
+  can see, let alone change.
 - Clear a task's stored event id when a write fails. The ids stay, so the next
   successful run updates the event it was always meant to.
 - Read events back in as activity. An appointment is not evidence that business
@@ -444,8 +522,10 @@ asks for the same id, Google answers 409, and the sync patches instead.
 
 ### The daily job
 
-Not scheduled by any migration, and deliberately not scheduled until a real
-on-demand sync has succeeded. When it has:
+Not scheduled by any migration, and deliberately not scheduled until three
+things are true: somebody has connected through the real button, one real
+follow-up has appeared on their primary calendar, and two repeated syncs have
+shown the same number of events rather than twice as many. When they are:
 
 ```
 select cron.schedule(

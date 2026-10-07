@@ -133,6 +133,25 @@ export function DataProvider({ children }: { children: ReactNode }) {
             return outcome;
           }
         : null,
+      /**
+       * No refresh. Starting an authorization changes nothing in the dataset, and
+       * the browser is about to leave the page for Google anyway.
+       */
+      startCalendarOAuth: repo.startCalendarOAuth
+        ? () => repo.startCalendarOAuth!()
+        : null,
+      /**
+       * Refreshes afterwards. Disconnecting does not change a task's calendar
+       * state, but the panel reads the connection row and the screens read the
+       * tasks, and one reload keeps both telling the same story.
+       */
+      disconnectCalendar: repo.disconnectCalendar
+        ? async () => {
+            const outcome = await repo.disconnectCalendar!();
+            await refresh();
+            return outcome;
+          }
+        : null,
     }),
     [data, error, loading, refresh, repo],
   );

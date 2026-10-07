@@ -156,6 +156,8 @@ function supabaseContext(status: AnalyticsStatus): DataContextValue {
     // The calendar has its own panel and its own tests.
     loadCalendar: null,
     triggerCalendarSync: null,
+    startCalendarOAuth: null,
+    disconnectCalendar: null,
     triggerSync: async () => ({ ok: true, status: 'succeeded', rowsWritten: 0, error: null }),
   };
 }

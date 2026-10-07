@@ -159,7 +159,8 @@ export const PROVIDER_NOTES: Record<IntegrationProvider, string> = {
     'A readable mirror of the pipeline, rewritten from the database. Never read back as truth.',
   website_forms: 'Enquiries from the site, landing straight in the Pipeline.',
   google_calendar:
-    'Open follow-ups out to a dedicated calendar. Nothing is read back in, because an '
+    'Open follow-ups out to your own Google Calendar, once you connect it. Nothing is '
+    + 'read back in, because an '
     + 'appointment is not evidence that business contact happened.',
   instagram: 'Post level numbers, so they stop being typed in by hand.',
   facebook: 'Page level numbers. Stories will stay unavailable whatever happens.',

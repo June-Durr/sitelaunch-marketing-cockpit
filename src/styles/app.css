@@ -890,6 +890,12 @@ table.data td.num { white-space: nowrap; }
     gap: 1rem;
     justify-content: space-between;
     align-items: baseline;
+    /* A long unbroken value, such as an email address, has to break rather than
+       push the whole page wider. Found at 390px with a real address in the
+       calendar panel's Google account cell: the text node overflowed, which is
+       invisible to an element by element overflow check. */
+    min-width: 0;
+    overflow-wrap: anywhere;
   }
   table.data td::before {
     content: attr(data-label);

@@ -122,6 +122,8 @@ function supabaseContext(options: {
     triggerLeadMirror: options.trigger ?? (async () => outcome()),
     loadCalendar: options.calendar ? async () => options.calendar as CalendarStatus : null,
     triggerCalendarSync: options.calendarSync ?? null,
+    startCalendarOAuth: null,
+    disconnectCalendar: null,
   };
 }
 
@@ -757,7 +759,7 @@ describe('Today has one follow-up queue, not two', () => {
     };
     await openToday(withTask);
 
-    expect(within(queueSection()).getByText('On the calendar')).toBeTruthy();
+    expect(within(queueSection()).getByText('On your calendar')).toBeTruthy();
   });
 
   it('reports a calendar failure as a failure', async () => {

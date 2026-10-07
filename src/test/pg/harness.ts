@@ -15,11 +15,18 @@
  * behaviour under test (foreign keys, triggers, RLS policies, view rights) is
  * plain Postgres running the project's own SQL unmodified.
  *
+ * Supabase Vault is stubbed the same way, for the same reason: it is a Supabase
+ * extension and does not ship with Postgres. The stub stores the secret in a
+ * table rather than encrypting it, which is exactly the part that is NOT under
+ * test here. What is under test is the behaviour built on top of it: that a
+ * reconnection without a new token keeps the old one, that forgetting really
+ * removes the secret, and that nobody but the service role can call any of it.
+ *
  * WHAT THIS STILL DOES NOT PROVE
  *
  * That the hosted Supabase project accepts these files through its own migration
- * runner, and that its real JWT path populates auth.uid() as expected. Those need
- * the hosted project.
+ * runner, that its real JWT path populates auth.uid() as expected, or that Vault
+ * encrypts what it says it encrypts. Those need the hosted project.
  */
 
 import { readFileSync } from 'node:fs';
@@ -37,6 +44,7 @@ export const MIGRATION_FILES = [
   '0007_lead_mirror.sql',
   '0008_mirror_conflict_target.sql',
   '0009_follow_up_tasks.sql',
+  '0010_calendar_oauth.sql',
 ];
 
 export const USER_A = '11111111-1111-1111-1111-111111111111';
@@ -63,8 +71,59 @@ const SUPABASE_PRELUDE = `
 
   create role anon nologin;
   create role authenticated nologin;
-  grant usage on schema public to anon, authenticated;
+  -- Supabase's own third role. The Edge Functions hold it, it bypasses row level
+  -- security, and migration 0010 grants the token functions to it alone.
+  create role service_role nologin bypassrls;
+  grant usage on schema public to anon, authenticated, service_role;
   grant usage on schema auth to anon, authenticated;
+
+  -- Supabase Vault, as much of it as the project's own SQL actually uses. The
+  -- real one encrypts; this one does not, which is why nothing here claims to
+  -- test encryption.
+  create schema if not exists vault;
+
+  create table vault.secrets (
+    id          uuid primary key default gen_random_uuid(),
+    name        text,
+    description text,
+    secret      text not null,
+    created_at  timestamptz not null default now(),
+    updated_at  timestamptz not null default now()
+  );
+
+  create view vault.decrypted_secrets as
+    select id, name, description, secret as decrypted_secret, created_at, updated_at
+    from vault.secrets;
+
+  create or replace function vault.create_secret(
+    new_secret text, new_name text default null, new_description text default null
+  ) returns uuid
+  language plpgsql
+  as $vault$
+  declare created uuid;
+  begin
+    insert into vault.secrets (name, description, secret)
+    values (new_name, new_description, new_secret)
+    returning id into created;
+    return created;
+  end;
+  $vault$;
+
+  create or replace function vault.update_secret(
+    secret_id uuid, new_secret text default null,
+    new_name text default null, new_description text default null
+  ) returns void
+  language plpgsql
+  as $vault$
+  begin
+    update vault.secrets
+       set secret      = coalesce(new_secret, secret),
+           name        = coalesce(new_name, name),
+           description = coalesce(new_description, description),
+           updated_at  = now()
+     where id = secret_id;
+  end;
+  $vault$;
 `;
 
 /**
@@ -76,12 +135,18 @@ const SUPABASE_PRELUDE = `
  * run afterwards. Ordering is not a detail here. Granting after the migrations
  * would silently undo the REVOKE in 0004, and the suite would report the views as
  * locked down while anonymous visitors could still read them.
+ *
+ * service_role is in the list for the same reason the other two are: Supabase
+ * grants it table privileges by default. Leaving it out would make the token
+ * store look locked down here while being open on the real project, which is the
+ * wrong way round for a test to be wrong. What stops it being a hole is that
+ * nothing a browser can hold is ever the service role.
  */
 const DEFAULT_PRIVILEGES = `
   alter default privileges in schema public
-    grant all on tables to anon, authenticated;
+    grant all on tables to anon, authenticated, service_role;
   alter default privileges in schema public
-    grant all on sequences to anon, authenticated;
+    grant all on sequences to anon, authenticated, service_role;
 `;
 
 export interface TestDatabase {
@@ -90,6 +155,8 @@ export interface TestDatabase {
   asUser<T>(userId: string, work: () => Promise<T>): Promise<T>;
   /** Run as an anonymous visitor. */
   asAnon<T>(work: () => Promise<T>): Promise<T>;
+  /** Run as the role the Edge Functions hold, which bypasses row level security. */
+  asServiceRole<T>(work: () => Promise<T>): Promise<T>;
   close(): Promise<void>;
 }
 
@@ -139,6 +206,8 @@ export async function freshDatabase(
     db,
     asUser: (userId, work) => withRole('authenticated', userId, work),
     asAnon: (work) => withRole('anon', null, work),
+    /** Run as the role the Edge Functions hold. Bypasses row level security. */
+    asServiceRole: (work) => withRole('service_role', null, work),
     async close() {
       await db.close();
     },

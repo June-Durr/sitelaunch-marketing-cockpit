@@ -33,6 +33,8 @@ returns invented data is worse than nothing, because it looks like it works.
 |---|---|
 | `integrations/types.ts` | Shared provider, status, stage and run types |
 | `integrations/calendar.ts` | The Google Calendar sync contract and its rules |
+| `integrations/googleOAuth.ts` | Connecting a person's own Google account: the one-use state, the authorize url, the code exchange, the refresh, the revoke |
+| `integrations/calendarSync.ts` | Who gets synced and what happens when one owner's authorization breaks. Two injected seams, no network, no Postgres |
 | `integrations/analytics.ts` | The GA4 and Search Console sync contracts |
 | `integrations/googleAuth.ts` | Service account to access token, and the seam for customer OAuth later |
 | `integrations/ga4.ts` | Reading GA4, and mapping what comes back |

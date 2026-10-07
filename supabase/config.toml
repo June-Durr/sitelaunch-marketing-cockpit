@@ -31,3 +31,24 @@ verify_jwt = false
 # Authorization header at all.
 [functions.sync-calendar]
 verify_jwt = false
+
+# Starting and ending a Google Calendar connection.
+#
+# This one needs a real session and nothing else, and it enforces that itself
+# with requireUser, which accepts a Bearer token only and refuses the cron secret
+# outright: a shared secret cannot consent on somebody's behalf. Platform JWT
+# checking is left off for consistency with the rest, and because the function's
+# own check is the stricter of the two.
+[functions.calendar-oauth]
+verify_jwt = false
+
+# Google's redirect target.
+#
+# This is the one function that genuinely cannot have platform JWT checking.
+# Google sends a browser here with a code and a state and no Supabase session, so
+# verify_jwt = true would reject every real callback before the body ran. It does
+# its own check first instead: the state is consumed before any write and before
+# the code is exchanged, and a state that is forged, replayed, expired or unknown
+# ends the request having changed nothing.
+[functions.calendar-oauth-callback]
+verify_jwt = false
