@@ -162,8 +162,17 @@ export interface CalendarSyncOutcome {
   /** Events already there and brought up to date. */
   updated: number | null;
   failed: number | null;
-  /** Open follow-up tasks considered. */
+  /** Open follow-up tasks actually attempted, which may be fewer than are open. */
   tasks: number | null;
+  /**
+   * Why the run stopped before reaching every open follow-up, if it did.
+   *
+   * 'repeated_failure' means Google refused the same way several times running
+   * and the sync gave up rather than making the same rejected request another
+   * sixteen times. Without this the screen would report the few it attempted as
+   * though they were all there were.
+   */
+  stoppedEarly: 'limit' | 'repeated_failure' | null;
   /** Already sanitized server side. Safe to display. */
   error: string | null;
 }

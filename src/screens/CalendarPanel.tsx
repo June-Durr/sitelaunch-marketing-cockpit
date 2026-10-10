@@ -372,7 +372,16 @@ function CalendarRunResult({ outcome }: { outcome: CalendarSyncOutcome }) {
     <p className={failed > 0 ? 'notice notice-amber' : 'notice notice-violet'}>
       {created} added, {updated} brought up to date
       {failed > 0 ? `, ${failed} could not be written` : ''}, out of{' '}
-      {outcome.tasks ?? 0} open {outcome.tasks === 1 ? 'follow-up' : 'follow-ups'}.
+      {outcome.tasks ?? 0}{' '}
+      {outcome.stoppedEarly ? 'attempted' : 'open'}{' '}
+      {outcome.tasks === 1 ? 'follow-up' : 'follow-ups'}.
+      {/* A run that gave up early must not read as a run that covered
+          everything, which is what "out of 3 open follow-ups" would say when
+          nineteen are open. */}
+      {outcome.stoppedEarly === 'repeated_failure'
+        ? ' Google refused the same way several times, so the rest were not'
+          + ' attempted. Fixing the reason below and syncing again will pick them up.'
+        : ''}
       {failed > 0 ? ` ${outcome.error ?? ''}` : ''}
     </p>
   );

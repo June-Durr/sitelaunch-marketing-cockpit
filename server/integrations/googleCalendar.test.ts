@@ -14,7 +14,8 @@ import { describe, expect, it } from 'vitest';
 import {
   buildFollowUpEvent, calendarEventId, calendarReasons, CALENDAR_SCOPE, dayAfter,
   EVENT_ID_PREFIX, FORBIDDEN_CALENDAR_IDS, isValidGoogleEventId, isWritableCalendarId,
-  MANAGED_BY_NOTE, pushFollowUpEvent, type CalendarDeps, type FollowUpEventInput,
+  MANAGED_BY_NOTE, pushFollowUpEvent, calendarFailureDetail,
+  type CalendarDeps, type FollowUpEventInput,
 } from './googleCalendar.ts';
 import type { GoogleTokenSource } from './googleAuth.ts';
 import type { CalendarAuthMode } from './googleCalendar.ts';
@@ -67,6 +68,34 @@ function fakeCalendar(options: {
 
     if (method === 'POST') {
       const id = String(body.id);
+
+      /**
+       * The rule the live API actually enforces, reproduced.
+       *
+       * Google accepts an event with no `source` at all, and rejects one whose
+       * `source` has no usable `url`. The reference page lists source.url as
+       * optional, which is why this was not caught by reading the docs; the
+       * first real run answered 400 invalid, "Invalid source url: .", nineteen
+       * times. The fake now answers the same way, so the mistake cannot come
+       * back without this file going red.
+       */
+      if (body.source !== undefined) {
+        const url = (body.source as { url?: unknown } | null)?.url;
+        const usable = typeof url === 'string' && /^https?:\/\/\S+$/.test(url);
+        if (!usable) {
+          return new Response(
+            JSON.stringify({
+              error: {
+                code: 400,
+                message: `Invalid source url: ${typeof url === 'string' ? url : ''}.`,
+                errors: [{ domain: 'global', reason: 'invalid', message: 'Invalid source url' }],
+              },
+            }),
+            { status: 400 },
+          );
+        }
+      }
+
       if (options.failInsertWith) {
         if (options.createDespiteFailure) events.set(id, body);
         return new Response(
@@ -387,7 +416,10 @@ describe('a failed write says what went wrong without saying too much', () => {
   it('reports the status and Google’s own reason code', async () => {
     const google = fakeCalendar({ failInsertWith: 403 });
     await expect(pushFollowUpEvent(deps(google.fetchImpl), input())).rejects.toThrow(
-      /Google Calendar POST failed \(HTTP 403\).*(PERMISSION_DENIED|FORBIDDEN)/,
+      // Google's literal reason, not a normalised one. The first live failure
+      // said only "INVALID", and finding out which field it meant took an
+      // investigation that Google's own words would have saved.
+      /Google Calendar POST failed \(HTTP 403\).*forbidden/,
     );
   });
 
@@ -449,5 +481,114 @@ describe('it never deletes anything', () => {
 
     expect(google.calls.some((call) => call.startsWith('DELETE'))).toBe(false);
     expect(google.events.size).toBe(1);
+  });
+});
+
+/* ================================ the payload Google refused, 2026-10-10 === */
+
+/**
+ * The first real sync failed nineteen times out of nineteen.
+ *
+ * Every one of them was HTTP 400, reason `invalid`, message "Invalid source
+ * url: .". The body carried `source: { title: 'SiteLaunch Marketing Cockpit' }`
+ * and no url, which Google refuses: the object is optional, but once it is
+ * present its url is not.
+ *
+ * The fields below are the real ones from task 00ad76a2, kept so the body under
+ * test is the body that was actually sent rather than a tidied version of it.
+ */
+describe('the event body is one Google will accept', () => {
+  const live: FollowUpEventInput = {
+    taskId: '00ad76a2-2c6a-4352-932c-3540c476922e',
+    dueDate: '2026-10-06',
+    taskTitle: 'Follow up with Janeth',
+    taskNotes:
+      'Ask whether the other company completed the website and whether anything '
+      + 'is still needed',
+    prospectName: 'Janeth',
+    organization: 'JMC Clean Master',
+    preferredChannel: 'Phone + text (Spanish)',
+    relationship: 'Prospect',
+    project: null,
+  };
+
+  it('sends no source object, rather than one with no url in it', () => {
+    const event = buildFollowUpEvent(live) as unknown as Record<string, unknown>;
+    // Absent, not empty: an empty object would fail exactly the same way.
+    expect('source' in event).toBe(false);
+  });
+
+  it('is accepted by a Google that enforces the real source rule', async () => {
+    const google = fakeCalendar();
+    const result = await pushFollowUpEvent(
+      deps(google.fetchImpl, 'primary', 'user_oauth'),
+      live,
+    );
+    expect(result.outcome).toBe('created');
+    expect(google.events.get(result.eventId)).toBeTruthy();
+  });
+
+  it('would have failed before the correction, for the reason Google gave', async () => {
+    /**
+     * The counterpart to the test above.
+     *
+     * It sends the old body deliberately, so the fake's rule is proved to bite.
+     * Without this, a fake that quietly accepted anything would make the test
+     * above pass whatever the body looked like.
+     */
+    const google = fakeCalendar();
+    const old = {
+      ...buildFollowUpEvent(live),
+      source: { title: 'SiteLaunch Marketing Cockpit' },
+    };
+    const response = await google.fetchImpl(
+      'https://www.googleapis.com/calendar/v3/calendars/primary/events',
+      { method: 'POST', headers: { authorization: 'Bearer not-a-real-token' },
+        body: JSON.stringify(old) },
+    );
+    expect(response.status).toBe(400);
+    const detail = calendarFailureDetail(400, await response.json());
+    expect(detail.reason).toBe('invalid');
+    expect(detail.message).toContain('Invalid source url');
+  });
+
+  it('keeps every other field exactly as Google wants it', () => {
+    const event = buildFollowUpEvent(live);
+
+    // The id: base32hex only, between 5 and 1024 characters.
+    expect(event.id).toBe('slc00ad76a22c6a4352932c3540c476922e');
+    expect(event.id).toMatch(/^[a-v0-9]{5,1024}$/);
+    expect(isValidGoogleEventId(event.id)).toBe(true);
+
+    // An all day event: a date, not a dateTime, and an exclusive end.
+    expect(event.start).toEqual({ date: '2026-10-06' });
+    expect(event.end).toEqual({ date: '2026-10-07' });
+    expect(event.start.date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(event.end.date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(event.end.date).toBe(dayAfter(event.start.date));
+
+    // The one enum, and a value that is in it.
+    expect(['opaque', 'transparent']).toContain(event.transparency);
+
+    // No key is sent holding undefined or null. Google rejects some of those
+    // outright and silently ignores others, and neither is worth finding out
+    // about in production.
+    for (const [key, value] of Object.entries(event)) {
+      expect(value, `${key} is empty`).not.toBeUndefined();
+      expect(value, `${key} is null`).not.toBeNull();
+    }
+
+    // And nothing has crept in beyond the fields that were reasoned about.
+    expect(Object.keys(event).sort()).toEqual([
+      'description', 'end', 'id', 'start', 'summary', 'transparency',
+    ]);
+  });
+
+  it('still says who made it, in the description rather than in a source', () => {
+    // Dropping `source` must not drop the attribution, which is the only thing
+    // it was carrying.
+    const event = buildFollowUpEvent(live);
+    expect(event.description).toContain('SiteLaunch Cockpit');
+    expect(event.description).toContain('Cockpit task: 00ad76a2-2c6a-4352-932c-3540c476922e');
   });
 });

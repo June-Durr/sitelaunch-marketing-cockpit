@@ -42,6 +42,7 @@
 
 import type { GoogleTokenSource } from './googleAuth.ts';
 import { CALENDAR_OAUTH_SCOPE } from './googleOAuth.ts';
+import { redact } from './sanitize.ts';
 
 /**
  * The narrowest scope that can write an event.
@@ -159,7 +160,6 @@ export interface GoogleEventBody {
   start: { date: string };
   end: { date: string };
   transparency: 'transparent';
-  source?: { title: string };
 }
 
 /** The day after, because an all-day event's end date is exclusive. */
@@ -201,6 +201,20 @@ export function buildFollowUpEvent(input: FollowUpEventInput): GoogleEventBody {
     MANAGED_BY_NOTE,
   ];
 
+  /**
+   * No `source` object.
+   *
+   * It used to carry { title: 'SiteLaunch Marketing Cockpit' } and no url, and
+   * Google refused every single event for it: HTTP 400, reason invalid,
+   * "Invalid source url: .". The reference page lists source.url as optional,
+   * but the API treats it as required the moment `source` is present at all.
+   *
+   * It is dropped rather than given a url, because the only url available would
+   * be the Cockpit's own address: configuration this function does not have,
+   * and at the moment a localhost address nobody else could open. The
+   * attribution it was carrying is in the description already, where somebody
+   * reading the event actually sees it.
+   */
   return {
     id: calendarEventId(input.taskId),
     summary,
@@ -208,7 +222,6 @@ export function buildFollowUpEvent(input: FollowUpEventInput): GoogleEventBody {
     start: { date: input.dueDate },
     end: { date: dayAfter(input.dueDate) },
     transparency: 'transparent',
-    source: { title: 'SiteLaunch Marketing Cockpit' },
   };
 }
 
@@ -383,8 +396,75 @@ export async function pushFollowUpEvent(
   throw new Error(describeFailure('POST', created));
 }
 
+/**
+ * Everything in a failed Calendar body that is worth keeping, sanitized.
+ *
+ * WHY THIS EXISTS ALONGSIDE calendarReasons
+ *
+ * Because "INVALID" on its own is not a diagnosis. The first live run failed 19
+ * times with exactly that and nothing else, and finding out which field Google
+ * objected to meant reconstructing the request by hand. Google says which field
+ * it is, in `message` and `location`, and throwing that away to be cautious
+ * turned a two minute fix into an investigation.
+ *
+ * The caution is still warranted, so the free text goes through redact() like
+ * every other stored message, and the structured parts are allowlisted by shape:
+ * `domain`, `reason`, `location` and `locationType` are short identifiers, which
+ * is a shape no token, address or PEM block has.
+ */
+export interface CalendarFailureDetail {
+  status: number;
+  code: number | null;
+  message: string | null;
+  reason: string | null;
+  domain: string | null;
+  location: string | null;
+  locationType: string | null;
+}
+
+const IDENTIFIER = /^[A-Za-z][A-Za-z0-9_.-]{1,60}$/;
+
+function identifier(value: unknown): string | null {
+  return typeof value === 'string' && IDENTIFIER.test(value) ? value : null;
+}
+
+export function calendarFailureDetail(
+  status: number,
+  body: unknown,
+): CalendarFailureDetail {
+  const error = (body as { error?: Record<string, unknown> } | null)?.error ?? {};
+  const first = Array.isArray(error.errors)
+    ? ((error.errors[0] ?? {}) as Record<string, unknown>)
+    : {};
+
+  return {
+    status,
+    code: typeof error.code === 'number' ? error.code : null,
+    // Free text, so it is redacted rather than allowlisted. It is the field that
+    // actually names the problem, which is why it is kept at all.
+    message: typeof error.message === 'string' ? redact(error.message).slice(0, 300) : null,
+    reason: identifier(first.reason) ?? identifier(error.status),
+    domain: identifier(first.domain),
+    location: identifier(first.location),
+    locationType: identifier(first.locationType),
+  };
+}
+
+/** One line for a person, carrying the part that says which field was wrong. */
+export function describeCalendarFailure(
+  method: string,
+  detail: CalendarFailureDetail,
+): string {
+  const parts: string[] = [];
+  if (detail.reason) parts.push(detail.reason);
+  if (detail.location) {
+    parts.push(`at ${detail.location}${detail.locationType ? ` (${detail.locationType})` : ''}`);
+  }
+  if (detail.message) parts.push(detail.message);
+  const because = parts.length === 0 ? '' : `: ${parts.join(', ')}`;
+  return `Google Calendar ${method} failed (HTTP ${detail.status})${because}`;
+}
+
 function describeFailure(method: string, response: { status: number; body: unknown }): string {
-  const reasons = calendarReasons(response.body);
-  const because = reasons.length === 0 ? '' : `: ${reasons.join(', ')}`;
-  return `Google Calendar ${method} failed (HTTP ${response.status})${because}`;
+  return describeCalendarFailure(method, calendarFailureDetail(response.status, response.body));
 }

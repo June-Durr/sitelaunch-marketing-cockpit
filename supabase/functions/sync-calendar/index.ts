@@ -150,6 +150,23 @@ Deno.serve(async (request: Request): Promise<Response> => {
   const client = createServiceClient(supabaseUrl, serviceRoleKey);
 
   /**
+   * How many tasks this run may touch, when the caller says.
+   *
+   * Not an owner id and not a calendar: a count, clamped, and it can only ever
+   * narrow what the run does. A caller cannot use it to reach anybody else's
+   * tasks, which is why it is the one thing read from the body.
+   */
+  let limit: number | null = null;
+  try {
+    const body = (await request.clone().json()) as { limit?: unknown };
+    if (typeof body.limit === 'number' && Number.isFinite(body.limit)) {
+      limit = Math.max(1, Math.min(1000, Math.floor(body.limit)));
+    }
+  } catch {
+    limit = null;
+  }
+
+  /**
    * Whether this deployment can talk to Google at all.
    *
    * Deliberately checked AFTER the caller is known. Answering "not configured"
@@ -171,7 +188,11 @@ Deno.serve(async (request: Request): Promise<Response> => {
         503,
       );
     }
-    return { store: storeOver(client), refreshFor: (token) => refreshAccessToken(oauth, token) };
+    return {
+      store: storeOver(client),
+      refreshFor: (token) => refreshAccessToken(oauth, token),
+      ...(limit === null ? {} : { limit }),
+    };
   }
 
   /* ------------------------------------------------------- the scheduled run --- */
@@ -264,6 +285,7 @@ Deno.serve(async (request: Request): Promise<Response> => {
       updated: result.updated,
       failed: result.failed,
       tasks: result.tasks,
+      stoppedEarly: result.stoppedEarly,
       error: result.error,
     },
     result.status === 'failed' ? 502 : 200,

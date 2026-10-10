@@ -323,7 +323,8 @@ export function createSupabaseRepository(): Repository {
      */
     async triggerCalendarSync(): Promise<CalendarSyncOutcome> {
       const empty = (status: string, error: string): CalendarSyncOutcome => ({
-        ok: false, status, created: null, updated: null, failed: null, tasks: null, error,
+        ok: false, status, created: null, updated: null, failed: null, tasks: null,
+        stoppedEarly: null, error,
       });
 
       const { data: session } = await db.auth.getSession();
@@ -364,6 +365,10 @@ export function createSupabaseRepository(): Repository {
         updated: asNumber(body.updated),
         failed: asNumber(body.failed),
         tasks: asNumber(body.tasks),
+        stoppedEarly:
+          body.stoppedEarly === 'limit' || body.stoppedEarly === 'repeated_failure'
+            ? body.stoppedEarly
+            : null,
         error: typeof body.error === 'string' ? body.error : null,
       };
     },

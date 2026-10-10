@@ -74,7 +74,7 @@ const notConnected: CalendarStatus = { connection: null, runs: [] };
 function syncOutcome(over: Partial<CalendarSyncOutcome> = {}): CalendarSyncOutcome {
   return {
     ok: true, status: 'succeeded', created: 0, updated: 19, failed: 0, tasks: 19,
-    error: null, ...over,
+    stoppedEarly: null, error: null, ...over,
   };
 }
 
@@ -299,6 +299,41 @@ describe('a connected calendar reports what it actually did', () => {
       expect(panel().textContent).toMatch(/0 added, 19 brought up to date/),
     );
     expect(panel().textContent).toContain('19 open follow-ups');
+  });
+
+  /**
+   * A short run must not read as a complete one.
+   *
+   * On 2026-10-10 the first real sync failed nineteen times with the same 400.
+   * The sync now stops after three identical refusals, which is right, but it
+   * means the counts describe what was attempted rather than what is open. The
+   * screen has to say so, or three attempts out of nineteen reads as three
+   * follow-ups existing.
+   */
+  it('says when it gave up early rather than reporting a short run as the whole', async () => {
+    await open(
+      supabaseContext({
+        status: connectedStatus(),
+        sync: async () =>
+          syncOutcome({
+            ok: true, status: 'succeeded', created: 0, updated: 0, failed: 3, tasks: 3,
+            stoppedEarly: 'repeated_failure',
+            error: 'Google Calendar POST failed (HTTP 400): invalid, Invalid source url: .',
+          }),
+      }),
+    );
+    fireEvent.click(within(panel()).getByRole('button', { name: 'Sync now' }));
+    await waitFor(() => expect(panel().textContent).toContain('3 attempted'));
+
+    const text = panel().textContent ?? '';
+    expect(text).toContain('refused the same way several times');
+    expect(text).toContain('the rest were not attempted');
+    // Google's own words reach the screen, because "INVALID" on its own is
+    // what made the first failure take an investigation.
+    expect(text).toContain('Invalid source url');
+    // The footer legitimately says "open follow-ups", so the assertion is about
+    // the count: three attempted must never be printed as three open.
+    expect(text).not.toContain('3 open follow-ups');
   });
 
   it('says nobody is connected rather than blaming the calendar', async () => {

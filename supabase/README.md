@@ -495,6 +495,31 @@ stop the next owner's sync.
 An on-demand sync covers the signed in person and nobody else. The owner comes
 from the verified session, never from the request body.
 
+### The source field, and why there is not one
+
+The first real sync failed 19 times out of 19: `HTTP 400`, reason `invalid`,
+message `Invalid source url: .`. The body carried
+`source: { title: 'SiteLaunch Marketing Cockpit' }` and no `url`.
+
+The reference page lists `source.url` as optional, which is why reading the docs
+did not catch it. The API treats it as required the moment `source` is present
+at all. The object is now not sent. It is not given a url instead, because the
+only url available would be the Cockpit's own address, which `buildFollowUpEvent`
+does not have and which is a localhost address at the moment. The attribution it
+carried is in the event description, where somebody reading the event sees it.
+
+Two things changed alongside the fix, both because of how hard that was to
+diagnose from `INVALID` alone:
+
+- A failure now records Google's `message`, `reason`, `domain` and `location`,
+  sanitized, instead of one normalised reason word.
+- A run gives up after three consecutive failures with the same reason, and says
+  so in `details.stoppedEarly`. Nineteen identical 400s tell nobody anything the
+  first one did not, and they are nineteen chances to be rate limited for it.
+
+A caller may also pass `{"action":"export","limit":1}` to push a single task,
+which is how a canary is run before trusting a change against all of them.
+
 ### Why a retry cannot double-book
 
 The event id is derived from the task id: the uuid's hex digits with the hyphens
