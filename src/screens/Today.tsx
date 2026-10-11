@@ -21,6 +21,7 @@ import { isInProgram, programPosition } from '../config/program';
 import {
   DUE_SOON_DAYS, NEEDS_ACTION_STATUSES, followUpStates,
 } from '../config/followUp';
+import { FollowUpIcon } from '../components/icons';
 import { FollowUpQueue } from '../components/FollowUpQueue';
 import { readSettings } from '../data/settings';
 import { formatCurrency } from '../lib/format';
@@ -257,6 +258,11 @@ export function Today() {
 
       <Section
         title="Follow-ups to make"
+        /* The Cockpit's own queue mark, not the Google Calendar logo. These
+           follow-ups are decided by this app's rules; Google Calendar is one
+           of the places they get written to afterwards. Using Google's mark
+           here would say the opposite. */
+        icon={<FollowUpIcon size={18} />}
         note={`${dueNow.length} due now`}
         action={
           upcoming.length > 0 ? (

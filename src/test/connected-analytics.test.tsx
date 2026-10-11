@@ -194,6 +194,13 @@ function renderLocal(path: string, element: ReactNode) {
 const sectionFor = (title: string) =>
   screen.getByText(title).closest('section') as HTMLElement;
 
+/** A group band, by the id the section navigator also uses. */
+const groupFor = (id: string) => document.getElementById(id) as HTMLElement;
+
+/** One integration card, by its visible title. */
+const cardFor = (title: string | RegExp) =>
+  screen.getByText(title).closest('article') as HTMLElement;
+
 const headFor = (title: string) =>
   screen.getByText(title).closest('.section-head') as HTMLElement;
 
@@ -221,18 +228,21 @@ describe('the outdated claim that nothing is connected is gone', () => {
 
     const lede = document.querySelector('.page-head .page-lede') as HTMLElement;
     expect(lede.textContent).not.toMatch(/Nothing is wired up/i);
-    // Automatic, fallback, and not connected yet are each stated separately.
-    expect(lede.textContent).toMatch(
-      /Google Analytics and Search Console sync on a\s+daily schedule/,
-    );
+    // The lede now says how the page is organised; the groups themselves say
+    // which services are which. Automatic and fallback are still both named.
+    expect(lede.textContent).toMatch(/run on a schedule/);
     expect(lede.textContent).toMatch(/fallbacks/);
-    expect(lede.textContent).toMatch(/Instagram, Facebook, LinkedIn, TikTok,\s+Calendar/);
-    expect(lede.textContent).toMatch(/not connected yet/);
+
+    // And "not connected yet" is still said on the screen, by the cards that
+    // really are not connected rather than by a sentence up here.
+    expect(groupFor('social').textContent).toMatch(/Not set up/);
   });
 
   it('appears nowhere on the whole Data and Import screen', async () => {
     renderSupabase('/data', <DataImport key="d" />);
-    await waitFor(() => expect(screen.getByText('Remaining integrations')).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByText('Remaining automatic connections')).toBeTruthy(),
+    );
 
     expect(document.body.textContent).not.toMatch(/Nothing is wired up/i);
     expect(document.body.textContent).not.toMatch(/None of these are connected/i);
@@ -266,45 +276,50 @@ describe('connected Google analytics are reported once, by GoogleSyncPanel', () 
 
   it('does not list GA4 or Search Console again under the remaining integrations', async () => {
     renderSupabase('/data', <DataImport key="d" />);
-    await waitFor(() => expect(screen.getByText('Remaining integrations')).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByText('Remaining automatic connections')).toBeTruthy(),
+    );
 
-    const remaining = sectionFor('Remaining integrations');
-    expect(within(remaining).queryByText('Google Analytics')).toBeNull();
+    const remaining = groupFor('social');
+    expect(within(remaining).queryByText('Google Analytics 4')).toBeNull();
     expect(within(remaining).queryByText('Google Search Console')).toBeNull();
 
-    // So every "not set up" row left is a service that really is not set up.
-    const rows = within(remaining)
+    // So every "not set up" card left is a service that really is not set up.
+    const cards = within(remaining)
       .getAllByText('Not set up')
-      .map((tag) => (tag.closest('tr') as HTMLElement).textContent ?? '');
-    expect(rows.length).toBeGreaterThan(0);
-    for (const row of rows) {
-      expect(row).not.toMatch(/Google Analytics|Search Console/);
+      .map((tag) => (tag.closest('article') as HTMLElement).textContent ?? '');
+    expect(cards.length).toBeGreaterThan(0);
+    for (const card of cards) {
+      expect(card).not.toMatch(/Google Analytics|Search Console/);
     }
   });
 
   it('never reports a provider as both connected and not set up', async () => {
     renderSupabase('/data', <DataImport key="d" />);
-    await waitFor(() => expect(screen.getByText('Remaining integrations')).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByText('Remaining automatic connections')).toBeTruthy(),
+    );
 
-    // Only the Google panel claims anything is connected, and nothing anywhere
-    // else on the screen contradicts it.
-    const sections = screen
+    // Only the analytics group claims anything is connected, and nothing
+    // anywhere else on the screen contradicts it.
+    const groups = screen
       .getAllByText('Connected')
-      .map((tag) => tag.closest('section') as HTMLElement);
-    expect(sections).toHaveLength(2);
-    for (const section of sections) {
-      expect(section.querySelector('.section-title')?.textContent).toBe('Automatic analytics');
+      .map((tag) => tag.closest('.data-group') as HTMLElement);
+    expect(groups).toHaveLength(2);
+    for (const group of groups) {
+      expect(group.id).toBe('analytics');
     }
   });
 
-  it('counts the remaining services honestly in the section note', async () => {
+  it('shows exactly the five services that are still to come', async () => {
     renderSupabase('/data', <DataImport key="d" />);
-    await waitFor(() => expect(screen.getByText('Remaining integrations')).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByText('Remaining automatic connections')).toBeTruthy(),
+    );
 
-    // Five are left: the four that sync themselves have their own panels now,
+    // Five are left: the four that sync themselves have their own cards now,
     // and listing them here as well would give two answers to one question.
-    expect(headFor('Remaining integrations').textContent).toMatch(/none of these 5 yet/);
-    expect(sectionFor('Remaining integrations').querySelectorAll('tbody tr')).toHaveLength(5);
+    expect(groupFor('social').querySelectorAll('.int-card')).toHaveLength(5);
   });
 
   it('no longer reports Google Calendar as not set up', async () => {
@@ -314,32 +329,38 @@ describe('connected Google analytics are reported once, by GoogleSyncPanel', () 
      * saying it was connected, and the table would be the one people believed.
      */
     renderSupabase('/data', <DataImport key="d" />);
-    await waitFor(() => expect(screen.getByText('Remaining integrations')).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByText('Remaining automatic connections')).toBeTruthy(),
+    );
 
-    const remaining = sectionFor('Remaining integrations');
-    expect(remaining.textContent).not.toContain('Google Calendar');
-    expect(screen.getByText('Follow-up calendar')).toBeTruthy();
+    expect(groupFor('social').textContent).not.toContain('Google Calendar');
+    // It has its own place instead, which the jump bar can reach directly.
+    expect(groupFor('calendar')).toBeTruthy();
+    expect(screen.getByText('Relationships and follow-up')).toBeTruthy();
   });
 
   it('keeps the manual CSV importer, labelled as the fallback it is', async () => {
     renderSupabase('/data', <DataImport key="d" />);
     await waitFor(() => expect(screen.getByText('Import a GA4 traffic export')).toBeTruthy());
 
-    const section = sectionFor('Import a GA4 traffic export');
-    expect(section.querySelector('input[type="file"]')).toBeTruthy();
-    expect(section.textContent).toMatch(/fallback/i);
-    expect(section.textContent).toMatch(/The daily sync above covers Google Analytics/);
-    expect(section.textContent).toMatch(/never fills a gap with a zero/);
+    const card = cardFor('Import a GA4 traffic export');
+    expect(card.querySelector('input[type="file"]')).toBeTruthy();
+    expect(card.textContent).toMatch(/fallback/i);
+    expect(card.textContent).toMatch(/never fills a gap with a zero/);
+    // And it sits in the fallback group, not among the automatic connections.
+    expect(groupFor('fallback').contains(card)).toBe(true);
   });
 
   it('explains the exclusion by pointing at the panels that do report them', async () => {
     renderSupabase('/data', <DataImport key="d" />);
-    await waitFor(() => expect(screen.getByText('Remaining integrations')).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByText('Remaining automatic connections')).toBeTruthy(),
+    );
 
-    const remaining = sectionFor('Remaining integrations');
-    expect(remaining.textContent).toMatch(/Each has its own panel above/);
+    const remaining = groupFor('social');
+    expect(remaining.textContent).toMatch(/Each has its own card above/);
     expect(remaining.textContent).toMatch(
-      /the Sheet mirror and the follow-up calendar are\s*not in this list on purpose/,
+      /the Sheet mirror and the follow-up calendar\s*are not in this list on purpose/,
     );
   });
 });
@@ -479,11 +500,12 @@ describe('browser-only mode still describes itself honestly', () => {
     renderLocal('/data', <DataImport key="d" />);
     await waitFor(() => expect(screen.getByText('Automatic analytics')).toBeTruthy());
 
-    expect(headFor('Automatic analytics').textContent).toMatch(/not available here/);
-    const panel = sectionFor('Automatic analytics');
+    const panel = groupFor('analytics');
     expect(panel.textContent).toMatch(/once this\s+cockpit is on Supabase/);
     expect(within(panel).queryByText('Connected')).toBeNull();
-    expect(panel.querySelector('table')).toBeNull();
+    // No card at all, because there is no state to report. A card with every
+    // field empty would look like a connection that had failed.
+    expect(panel.querySelectorAll('.int-card')).toHaveLength(0);
   });
 
   it('does not promise a daily sync in the page introduction', async () => {
@@ -515,23 +537,27 @@ describe('browser-only mode still describes itself honestly', () => {
 
   it('still lists the remaining integrations, with the Supabase-first note', async () => {
     renderLocal('/data', <DataImport key="d" />);
-    await waitFor(() => expect(screen.getByText('Remaining integrations')).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByText('Remaining automatic connections')).toBeTruthy(),
+    );
 
-    const remaining = sectionFor('Remaining integrations');
+    const remaining = groupFor('social');
     expect(remaining.textContent).toMatch(/Supabase comes first/);
-    expect(within(remaining).queryByText('Google Analytics')).toBeNull();
-    // The four that sync themselves have their own panels, here and in Supabase
-    // mode alike, so this table is the same five either way.
-    expect(remaining.querySelectorAll('tbody tr')).toHaveLength(5);
+    expect(within(remaining).queryByText('Google Analytics 4')).toBeNull();
+    // The four that sync themselves have their own cards, here and in Supabase
+    // mode alike, so this group is the same five either way.
+    expect(remaining.querySelectorAll('.int-card')).toHaveLength(5);
   });
 
   it('does not claim Google is connected and syncing while explaining its absence', async () => {
     renderLocal('/data', <DataImport key="d" />);
-    await waitFor(() => expect(screen.getByText('Remaining integrations')).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByText('Remaining automatic connections')).toBeTruthy(),
+    );
 
-    // The reason GA4 and Search Console are left out of this table has to hold in
-    // browser-only mode too, where they are not connected to anything.
-    const remaining = sectionFor('Remaining integrations');
+    // The reason GA4 and Search Console are left out of this group has to hold
+    // in browser-only mode too, where they are not connected to anything.
+    const remaining = groupFor('social');
     expect(remaining.textContent).not.toMatch(/connected and syncing/);
     expect(remaining.textContent).toMatch(/nothing to report yet/);
   });
@@ -540,12 +566,12 @@ describe('browser-only mode still describes itself honestly', () => {
     renderLocal('/data', <DataImport key="d" />);
     await waitFor(() => expect(screen.getByText('Import a GA4 traffic export')).toBeTruthy());
 
-    const section = sectionFor('Import a GA4 traffic export');
-    expect(section.textContent).not.toMatch(/The daily sync above covers/);
-    expect(section.textContent).toMatch(/Nothing syncs in browser-only mode/);
+    const card = cardFor('Import a GA4 traffic export');
+    expect(card.textContent).not.toMatch(/The daily sync above covers/);
+    expect(card.textContent).toMatch(/browser-only mode/);
     // It is still the real importer, with the same no-zeroes promise.
-    expect(section.querySelector('input[type="file"]')).toBeTruthy();
-    expect(section.textContent).toMatch(/never fills a gap with a zero/);
+    expect(card.querySelector('input[type="file"]')).toBeTruthy();
+    expect(card.textContent).toMatch(/never fills a gap with a zero/);
   });
 });
 

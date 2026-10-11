@@ -2,6 +2,10 @@ import { NavLink, Outlet } from 'react-router-dom';
 import { useData } from '../data/context';
 import { useAuth } from '../auth/context';
 import { today } from '../lib/dates';
+import {
+  ActivityIcon, ContentIcon, DataIcon, PipelineIcon, RecommendationsIcon,
+  TasksIcon, TodayIcon, WebsiteIcon, type IconComponent,
+} from './icons';
 
 export function AppShell() {
   const { data, mode, loading, error } = useData();
@@ -14,20 +18,28 @@ export function AppShell() {
   ).length;
   const liveRecs = data.recommendations.filter((r) => !r.dismissed_at).length;
 
-  const links: { to: string; label: string; count?: number }[] = [
-    { to: '/', label: 'Today', count: dueTasks + dueLeads || undefined },
-    { to: '/content', label: 'Content Log', count: data.contentItems.length || undefined },
+  /**
+   * The eight destinations, each with a mark.
+   *
+   * The labels stay. An icon-only rail would make somebody learn eight glyphs
+   * to use a tool they open twice a day, and the counts beside them would have
+   * nothing to attach to. The icon is a second way to find a row you already
+   * know, not a replacement for reading it.
+   */
+  const links: { to: string; label: string; Icon: IconComponent; count?: number }[] = [
+    { to: '/', label: 'Today', count: dueTasks + dueLeads || undefined , Icon: TodayIcon},
+    { to: '/content', label: 'Content Log', count: data.contentItems.length || undefined , Icon: ContentIcon},
     // No count on Website Outcomes. The manual traffic_snapshots total used to sit
     // here, which read as the whole of the website story when in fact the synced GA4
     // and Search Console rows live in their own tables. Showing the honest number
     // would mean a second analytics read in the shell, on every screen, so the badge
     // is gone instead of wrong.
-    { to: '/website', label: 'Website Outcomes' },
-    { to: '/pipeline', label: 'Pipeline', count: dueLeads || undefined },
-    { to: '/tasks', label: 'Tasks', count: dueTasks || undefined },
-    { to: '/activity', label: 'Activity', count: data.activityEvents.length || undefined },
-    { to: '/recommendations', label: 'Recommendations', count: liveRecs || undefined },
-    { to: '/data', label: 'Data & Import' },
+    { to: '/website', label: 'Website Outcomes' , Icon: WebsiteIcon},
+    { to: '/pipeline', label: 'Pipeline', count: dueLeads || undefined , Icon: PipelineIcon},
+    { to: '/tasks', label: 'Tasks', count: dueTasks || undefined , Icon: TasksIcon},
+    { to: '/activity', label: 'Activity', count: data.activityEvents.length || undefined , Icon: ActivityIcon},
+    { to: '/recommendations', label: 'Recommendations', count: liveRecs || undefined , Icon: RecommendationsIcon},
+    { to: '/data', label: 'Data & Import' , Icon: DataIcon},
   ];
 
   return (
@@ -49,7 +61,11 @@ export function AppShell() {
         <div className="nav">
           {links.map((link) => (
             <NavLink key={link.to} to={link.to} end={link.to === '/'} className="nav-link">
-              <span>{link.label}</span>
+              <span className="nav-link-face">
+                {/* Decorative: the label beside it already says where this goes. */}
+                <link.Icon size={17} />
+                <span className="nav-link-label">{link.label}</span>
+              </span>
               {link.count ? <span className="nav-count">{link.count}</span> : null}
             </NavLink>
           ))}

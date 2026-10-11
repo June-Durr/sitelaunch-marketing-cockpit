@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import { useData } from '../data/context';
-import { Notice, Section, Tag } from '../components/primitives';
+import { Notice, Tag } from '../components/primitives';
+import { IntegrationCard } from '../components/DataGroups';
+import { BackupIcon } from '../components/icons';
 import { readSettings, writeSettings } from '../data/settings';
 import {
   BACKUP_SCHEMA_VERSION, TABLE_NAMES, backupFilename, buildBackup,
@@ -138,17 +140,24 @@ export function BackupPanel() {
   }
 
   return (
-    <Section
+    <IntegrationCard
+      Icon={BackupIcon}
       title="Backup and restore"
-      note={`Schema ${BACKUP_SCHEMA_VERSION}`}
+      purpose={
+        mode === 'local'
+          ? 'This browser holds the only copy. Export a file before you clear site data.'
+          : 'A point-in-time snapshot you can export, and import into an empty account.'
+      }
+      meta={[{ label: 'Schema', value: BACKUP_SCHEMA_VERSION }]}
+      details={
+        <p>
+          {mode === 'local'
+            ? 'This browser holds the only copy of your data. Export a backup file before you clear site data, switch machines, or try anything you might regret.'
+            : 'Data is stored in Supabase. Export takes a point-in-time snapshot. A backup can also be imported, which is how you move data off a browser, but only into an account that holds no records yet, so an import can never overwrite what is already there.'}
+        </p>
+      }
     >
-      <p className="page-lede" style={{ marginTop: 0 }}>
-        {mode === 'local'
-          ? 'This browser holds the only copy of your data. Export a backup file before you clear site data, switch machines, or try anything you might regret.'
-          : 'Data is stored in Supabase. Export takes a point-in-time snapshot. A backup can also be imported, which is how you move data off a browser, but only into an account that holds no records yet, so an import can never overwrite what is already there.'}
-      </p>
-
-      <div className="btn-row">
+      <div className="btn-row" style={{ marginTop: '1rem' }}>
         <button className="btn btn-primary" onClick={exportBackup}>
           Export backup ({currentTotal} records)
         </button>
@@ -321,6 +330,6 @@ export function BackupPanel() {
           </div>
         </div>
       ) : null}
-    </Section>
+    </IntegrationCard>
   );
 }

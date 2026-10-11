@@ -163,13 +163,23 @@ function renderLocal(path: string, element: ReactNode) {
   );
 }
 
+/**
+ * The lead mirror card.
+ *
+ * Was a <Section> titled "Google Sheet lead mirror"; is now an integration card
+ * titled "Google Sheets lead mirror" inside the Relationships and follow-up
+ * group. Found by class rather than by title so a future wording change does
+ * not take the whole file with it.
+ */
 const panel = () =>
-  screen.getByText('Google Sheet lead mirror').closest('section') as HTMLElement;
+  (document.querySelector('.int-card') ??
+    screen.getByText(/Google Sheets lead mirror/).closest('article')) as HTMLElement;
 
 async function openData(value: DataContextValue) {
   renderWith(value, '/data', <DataImport key="d" />);
   await waitFor(() => expect(screen.getByRole('heading', { level: 1 })).toBeTruthy());
   // The panel reads its state in an effect, so wait for it to settle.
+  await waitFor(() => expect(document.querySelector('.int-card')).toBeTruthy());
   await waitFor(() => expect(within(panel()).queryByText('Connected')).toBeTruthy());
 }
 
@@ -204,11 +214,18 @@ describe('the lead mirror panel reports stored state, not intentions', () => {
     renderLocal('/data', <DataImport key="d" />);
     await waitFor(() => expect(screen.getByRole('heading', { level: 1 })).toBeTruthy());
 
-    const section = panel();
-    expect(within(section).getByText('not available here')).toBeTruthy();
-    expect(section.textContent).toContain('needs a server');
+    // No lead mirror card in this mode. The group renders a plain notice
+    // instead, which is the honest shape: there is nothing to report the state
+    // of. The fallback and settings cards are still there, because a backup
+    // file and a program window work perfectly well without a server.
+    expect(screen.queryByText(/Google Sheets lead mirror/)).toBeNull();
+    // By its own sentence, not by the shared opening clause: analytics and the
+    // calendar say "running on this browser alone" too, and matching that alone
+    // would pass whichever of the three happened to render first.
+    const notice = screen.getByText(/Writing to a Google Sheet needs a server/);
+    expect(notice.textContent).toContain('running on this browser alone');
     // No buttons that cannot work.
-    expect(within(section).queryByRole('button', { name: /Sync lead mirror now/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Sync lead mirror now/ })).toBeNull();
   });
 
   it('shows the connection the server actually recorded', async () => {
@@ -302,7 +319,7 @@ describe('a broken connection is reported and nothing else breaks', () => {
     await waitFor(() => expect(screen.getByRole('heading', { level: 1 })).toBeTruthy());
 
     await waitFor(() =>
-      expect(panel().textContent).toContain('relation "sync_runs" does not exist'),
+      expect(document.body.textContent).toContain('relation "sync_runs" does not exist'),
     );
     expect(screen.getByText('Accounts')).toBeTruthy();
   });

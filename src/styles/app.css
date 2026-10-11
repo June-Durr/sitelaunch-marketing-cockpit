@@ -102,7 +102,9 @@ a:hover { color: var(--charcoal); }
 .nav { display: flex; flex-direction: column; gap: 0.1rem; }
 .nav-link {
   display: flex;
-  align-items: baseline;
+  /* Centre, not baseline: an icon and a label align on their middles. The old
+     baseline value hung the glyph a pixel low once one was added. */
+  align-items: center;
   justify-content: space-between;
   gap: 0.5rem;
   padding: 0.44rem 0 0.44rem 0.75rem;
@@ -111,6 +113,13 @@ a:hover { color: var(--charcoal); }
   text-decoration: none;
   font-size: 0.875rem;
 }
+/* Icon, then label, then the count pushed to the far edge. The label is never
+   hidden: this is a navigation somebody reads, not a toolbar they memorise. */
+.nav-link-face { display: flex; align-items: center; gap: 0.55rem; min-width: 0; }
+.nav-link-face svg { flex: 0 0 auto; color: var(--ink-4); }
+.nav-link:hover .nav-link-face svg { color: var(--ink-2); }
+.nav-link[aria-current='page'] .nav-link-face svg { color: var(--violet); }
+.nav-link-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .nav-link:hover { color: var(--charcoal); border-left-color: var(--rule-strong); }
 .nav-link[aria-current='page'] {
   color: var(--charcoal);
@@ -919,3 +928,268 @@ table.data td.num { white-space: nowrap; }
 @media print {
   .sidebar, .btn, .drawer-backdrop { display: none; }
 }
+
+/* =========================================================================
+   Data & Import: groups, cards, chips and the jump-to bar.
+
+   The screen's complaint was that everything looked the same. These styles
+   exist to give it three legible levels rather than one, so the eye can skip
+   two of them:
+
+     group title   1.5rem   a band of the page, one topic
+     card title    1.1875rem one service
+     body          0.9375rem the sentence under it
+     meta          0.75rem   identifiers, timestamps, eyebrows
+
+   State is never carried by colour alone. A chip says "Connected" in words;
+   the colour is a second signal for people who can use it.
+   ========================================================================= */
+
+/* --------------------------------------------------------- the jump bar --- */
+
+.section-nav {
+  position: sticky;
+  /* Clears nothing above it on this layout; the main column scrolls, so 0 puts
+     the bar against the top of the viewport as the page moves under it. */
+  top: 0;
+  z-index: 20;
+  margin: 0 0 1.75rem;
+  padding: 0.55rem 0;
+  background: color-mix(in srgb, var(--ivory) 94%, transparent);
+  backdrop-filter: blur(6px);
+  border-bottom: 1px solid var(--rule);
+}
+.section-nav-scroll {
+  display: flex;
+  gap: 0.4rem;
+  /* Scrolls sideways on a phone rather than wrapping to three rows or pushing
+     the page wider. overflow-y visible would clip the focus ring. */
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+  padding-bottom: 0.15rem;
+  -webkit-overflow-scrolling: touch;
+}
+.section-nav-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex: 0 0 auto;
+  padding: 0.42rem 0.72rem;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  background: var(--paper);
+  color: var(--ink-2);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  text-decoration: none;
+  white-space: nowrap;
+  transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease;
+}
+.section-nav-item svg { color: var(--ink-4); }
+.section-nav-item:hover {
+  color: var(--charcoal);
+  border-color: var(--rule-strong);
+  background: var(--ivory-sunk);
+}
+.section-nav-item.is-active {
+  color: var(--charcoal);
+  background: var(--violet-soft);
+  border-color: var(--violet-line);
+  /* A second, non-colour signal for the current section. */
+  font-weight: 600;
+}
+.section-nav-item.is-active svg { color: var(--violet); }
+
+/* ------------------------------------------------------------- the group --- */
+
+.data-group {
+  /* Generous separation is the point: these bands are what somebody scrolls
+     past, and they have to read as separate places. */
+  margin: 0 0 3.25rem;
+  scroll-margin-top: 4.5rem;
+}
+.data-group:focus { outline: none; }
+.data-group:focus-visible { outline: 2px solid var(--violet); outline-offset: 6px; }
+.data-group-sunk {
+  background: var(--ivory-sunk);
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  padding: 1.5rem;
+}
+.data-group-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.85rem;
+  padding-bottom: 0.9rem;
+  margin-bottom: 1.4rem;
+  border-bottom: 2px solid var(--rule-strong);
+}
+.data-group-title {
+  font-family: var(--serif);
+  font-size: 1.5rem;
+  line-height: 1.15;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--charcoal);
+  margin: 0;
+}
+.data-group-lede {
+  margin: 0.35rem 0 0;
+  font-size: 0.9375rem;
+  line-height: 1.55;
+  color: var(--ink-2);
+  max-width: 54ch;
+}
+.data-group-body { display: flex; flex-direction: column; gap: 1.1rem; }
+
+/* -------------------------------------------------------------- the card --- */
+
+.int-card {
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  padding: 1.15rem 1.25rem;
+}
+.int-card-top {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.9rem;
+  flex-wrap: wrap;
+}
+.int-card-headings { flex: 1 1 16rem; min-width: 0; }
+.int-card-title {
+  font-family: var(--serif);
+  font-size: 1.1875rem;
+  line-height: 1.2;
+  font-weight: 600;
+  color: var(--charcoal);
+  margin: 0;
+}
+.int-card-purpose {
+  margin: 0.25rem 0 0;
+  font-size: 0.9375rem;
+  line-height: 1.5;
+  color: var(--ink-2);
+  max-width: 56ch;
+}
+.int-card-chip { flex: 0 0 auto; margin-left: auto; }
+
+/* The tinted plate behind a mark. Always neutral: a container that changed
+   colour with state would be saying what the chip already says. */
+.icon-tile {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  background: var(--ivory-sunk);
+  border: 1px solid var(--rule);
+  border-radius: 9px;
+}
+.icon-tile-md { width: 2.75rem; height: 2.75rem; }
+.icon-tile-sm { width: 2.1rem; height: 2.1rem; border-radius: 7px; }
+
+.int-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 1.75rem;
+  margin: 0.95rem 0 0;
+  padding-top: 0.85rem;
+  border-top: 1px solid var(--rule);
+}
+.int-card-meta > div { min-width: 0; }
+.int-card-meta dt {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-4);
+}
+.int-card-meta dd {
+  margin: 0.15rem 0 0;
+  font-size: 0.875rem;
+  color: var(--charcoal);
+  /* A long Google address must wrap rather than widen the page. */
+  overflow-wrap: anywhere;
+}
+.int-card-meta dd .quiet { color: var(--ink-4); }
+
+.int-card-error { margin: 0.9rem 0 0; }
+.int-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  align-items: center;
+  margin-top: 1rem;
+}
+
+/* ----------------------------------------------------------- the details --- */
+
+.int-details { margin-top: 0.95rem; border-top: 1px solid var(--rule); }
+.int-details-summary {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.6rem 0 0;
+  cursor: pointer;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--violet);
+  list-style: none;
+}
+.int-details-summary::-webkit-details-marker { display: none; }
+.int-details-summary:hover { color: var(--charcoal); }
+.int-details-summary:focus-visible { outline: 2px solid var(--violet); outline-offset: 3px; }
+.int-details-chevron { transition: transform 0.18s ease; }
+.int-details[open] .int-details-chevron { transform: rotate(180deg); }
+.int-details-body {
+  padding-top: 0.5rem;
+  font-size: 0.9375rem;
+  line-height: 1.6;
+  color: var(--ink-2);
+  max-width: 68ch;
+}
+.int-details-body > p { margin: 0 0 0.7rem; }
+.int-details-body > p:last-child { margin-bottom: 0; }
+
+/* A chip must not read as body text. */
+.int-card-chip .tag { font-size: 0.6875rem; letter-spacing: 0.07em; }
+
+/* ----------------------------------------------------------- small screens --- */
+
+@media (max-width: 640px) {
+  .section-nav { margin-bottom: 1.25rem; }
+  /* Full-bleed the scroller to the gutter so the first and last chip are not
+     half-hidden under the page padding. */
+  .section-nav-scroll { padding-left: 0; padding-right: 0; }
+  .data-group { margin-bottom: 2.25rem; }
+  .data-group-sunk { padding: 1.1rem; }
+  .data-group-title { font-size: 1.3125rem; }
+  .int-card { padding: 1rem; }
+  .int-card-title { font-size: 1.0625rem; }
+  /* The chip drops under the heading rather than squeezing the title to two
+     characters a line. */
+  .int-card-chip { margin-left: 0; flex-basis: 100%; }
+  .int-card-meta { gap: 0.6rem 1.25rem; }
+  .int-card-actions .btn { flex: 1 1 auto; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .int-details-chevron,
+  .section-nav-item { transition: none; }
+}
+
+/* A mark beside a section heading. Optical alignment only: the heading text
+   carries the meaning, so the icon is always decorative. */
+.section-icon {
+  display: inline-flex;
+  align-items: center;
+  margin-right: 0.5rem;
+  vertical-align: -0.18em;
+  color: var(--ink-3);
+}
+/* The anchor wrapper the jump bar lands on. No box of its own, just a scroll
+   target that clears the sticky bar. */
+.data-anchor { scroll-margin-top: 4.5rem; }
+.data-anchor:focus { outline: none; }
+.data-anchor:focus-visible { outline: 2px solid var(--violet); outline-offset: 6px; }

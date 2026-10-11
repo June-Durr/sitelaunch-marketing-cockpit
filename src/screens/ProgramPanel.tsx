@@ -1,5 +1,7 @@
 import { useState } from 'react';
-import { Field, Notice, Section } from '../components/primitives';
+import { Field, Notice } from '../components/primitives';
+import { IntegrationCard } from '../components/DataGroups';
+import { ProgramIcon } from '../components/icons';
 import { readSettings, writeSettings } from '../data/settings';
 import {
   DEFAULT_PROGRAM, PROGRAM_PHASES, programLength, programPosition, validateProgram,
@@ -40,14 +42,20 @@ export function ProgramPanel({ onSaved }: { onSaved?: () => void }) {
   }
 
   return (
-    <Section title="The program" note={valid ? `${programLength(form)} days` : undefined}>
-      <p className="page-lede" style={{ marginTop: 0 }}>
-        Every figure on the Today screen is counted against these dates. It is a fixed run,
-        not a rolling window, so a number here can only move because something actually
-        happened, never because a day went by.
-      </p>
-
-      <div className="form-grid" style={{ maxWidth: '44rem' }}>
+    <IntegrationCard
+      Icon={ProgramIcon}
+      title="The 90-day program"
+      purpose="The fixed window every figure on Today is counted against."
+      meta={valid ? [{ label: 'Length', value: `${programLength(form)} days` }] : []}
+      details={
+        <p>
+          Every figure on the Today screen is counted against these dates. It is a fixed
+          run, not a rolling window, so a number here can only move because something
+          actually happened, never because a day went by.
+        </p>
+      }
+    >
+      <div className="form-grid" style={{ maxWidth: '44rem', marginTop: '1rem' }}>
         <Field label="Program name" span>
           <input type="text" value={form.name} onChange={(e) => set('name', e.target.value)} />
         </Field>
@@ -131,6 +139,6 @@ export function ProgramPanel({ onSaved }: { onSaved?: () => void }) {
           ))}
         </tbody>
       </table>
-    </Section>
+    </IntegrationCard>
   );
 }

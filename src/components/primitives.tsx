@@ -109,17 +109,29 @@ export function Section({
   title,
   note,
   action,
+  icon,
   children,
 }: {
   title: string;
   note?: ReactNode;
   action?: ReactNode;
+  /**
+   * A mark beside the heading. Decorative: the title says the same thing.
+   *
+   * It exists so a section somebody has to tell apart from a neighbouring one
+   * can be told apart at a glance, which is the whole reason the follow-up
+   * queue carries one.
+   */
+  icon?: ReactNode;
   children: ReactNode;
 }) {
   return (
     <section className="section">
       <div className="section-head">
-        <h2 className="section-title">{title}</h2>
+        <h2 className="section-title">
+          {icon ? <span className="section-icon">{icon}</span> : null}
+          {title}
+        </h2>
         {action ?? (note ? <span className="section-note">{note}</span> : null)}
       </div>
       {children}

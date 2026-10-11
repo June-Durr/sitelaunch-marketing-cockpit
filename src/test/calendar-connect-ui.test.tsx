@@ -142,12 +142,31 @@ function renderWith(value: DataContextValue, path = '/data') {
   );
 }
 
+/**
+ * The calendar card.
+ *
+ * It used to be a <Section> titled "Follow-up calendar". It is now an
+ * integration card titled "Google Calendar", sitting inside the Relationships
+ * and follow-up group on the Data screen. The heading moved up a level and the
+ * card took the product's own name, which is the point of the redesign: you
+ * should be able to tell this is Google Calendar without reading a paragraph.
+ */
 const panel = () =>
-  screen.getByText('Follow-up calendar').closest('section') as HTMLElement;
+  (document.querySelector('.int-card') ??
+    screen.getByText('Google Calendar').closest('article')) as HTMLElement;
+
+/**
+ * Everything the panel rendered, card and notices together.
+ *
+ * The outcome of connecting, and of failing to, is about the panel rather than
+ * about the card's own state, so those notices render beside the card. Reading
+ * them off the card would be asserting the wrong element.
+ */
+const panelText = () => document.body.textContent ?? '';
 
 async function open(value: DataContextValue, path = '/data') {
   renderWith(value, path);
-  await waitFor(() => expect(screen.getByText('Follow-up calendar')).toBeTruthy());
+  await waitFor(() => expect(document.querySelector('.int-card')).toBeTruthy());
   // The panel reads its state in an effect, so let it settle.
   await waitFor(() =>
     expect(within(panel()).queryAllByRole('button').length).toBeGreaterThan(0),
@@ -176,7 +195,7 @@ describe('connecting a calendar is one button and nothing else', () => {
   it('never asks anybody to create, share or name a calendar', async () => {
     for (const status of [notConnected, connectedStatus()]) {
       const { unmount } = renderWith(supabaseContext({ status }));
-      await waitFor(() => expect(screen.getByText('Follow-up calendar')).toBeTruthy());
+      await waitFor(() => expect(document.querySelector('.int-card')).toBeTruthy());
       const text = panel().textContent ?? '';
 
       for (const forbidden of [
@@ -245,7 +264,7 @@ describe('connecting a calendar is one button and nothing else', () => {
     );
     fireEvent.click(within(panel()).getByRole('button', { name: 'Connect Google Calendar' }));
     await waitFor(() =>
-      expect(panel().textContent).toContain('not set up on this deployment yet'),
+      expect(panelText()).toContain('not set up on this deployment yet'),
     );
   });
 });
@@ -258,18 +277,18 @@ describe('a connected calendar reports what it actually did', () => {
     const text = panel().textContent ?? '';
     expect(text).toContain('invented.person@example.test');
     expect(text).toContain('Primary Google Calendar');
-    // And not the raw id, which means nothing to a person.
+    // And not the raw id on its own, which means nothing to a person.
     expect(within(panel()).queryByText('primary')).toBeNull();
   });
 
   it('shows the last successful and last attempted sync separately', async () => {
     await open(supabaseContext({ status: connectedStatus() }));
-    const headers = [...panel().querySelectorAll('th')].map((h) => h.textContent);
-    expect(headers).toContain('Last successful');
-    expect(headers).toContain('Last attempted');
-    expect(headers).toContain('Next scheduled');
-    expect(headers).toContain('Google account');
-    expect(headers).toContain('Where events go');
+    const labels = [...panel().querySelectorAll('dt')].map((d) => d.textContent);
+    expect(labels).toContain('Last successful');
+    expect(labels).toContain('Last attempted');
+    expect(labels).toContain('Next scheduled');
+    expect(labels).toContain('Google account');
+    expect(labels).toContain('Where events go');
   });
 
   it('offers Sync now and Disconnect once there is a connection', async () => {
@@ -384,17 +403,17 @@ describe('a connected calendar reports what it actually did', () => {
 describe('the panel reads the result the callback redirected back with', () => {
   it('confirms a connection', async () => {
     await open(supabaseContext({ status: connectedStatus() }), '/data?calendar=connected');
-    expect(panel().textContent).toContain('Google Calendar is connected');
+    expect(panelText()).toContain('Google Calendar is connected');
   });
 
   it('says nothing changed when somebody cancelled at Google', async () => {
     await open(supabaseContext({ status: notConnected }), '/data?calendar=refused');
-    expect(panel().textContent).toContain('cancelled at Google, so nothing changed');
+    expect(panelText()).toContain('cancelled at Google, so nothing changed');
   });
 
   it('says nothing changed when it failed, without guessing why', async () => {
     await open(supabaseContext({ status: notConnected }), '/data?calendar=failed');
-    const text = panel().textContent ?? '';
+    const text = panelText();
     expect(text).toContain('did not complete, so nothing changed');
     // The reason came from a query string anybody can write, so none is shown.
     expect(text).not.toContain('invalid');
@@ -479,11 +498,16 @@ describe('browser only mode says why this cannot work here', () => {
         </MemoryRouter>
       </DataProvider>,
     );
-    await waitFor(() => expect(screen.getByText('Follow-up calendar')).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByText(/running on this browser alone/)).toBeTruthy(),
+    );
 
-    expect(panel().textContent).toContain('running on this browser alone');
-    expect(panel().textContent).toContain('needs a server to hold the authorization');
-    expect(within(panel()).queryAllByRole('button')).toEqual([]);
+    // No card at all in this mode: there is nothing to connect to, so the
+    // screen says so rather than offering a dead button.
+    expect(document.querySelector('.int-card')).toBeNull();
+    const notice = screen.getByText(/running on this browser alone/);
+    expect(notice.textContent).toContain('needs a server to hold the authorization');
+    expect(screen.queryByRole('button', { name: 'Connect Google Calendar' })).toBeNull();
   });
 
   it('never leaves anything about the connection in browser storage', () => {

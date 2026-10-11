@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useData } from '../data/context';
-import { Empty, Notice, Section, Tag } from '../components/primitives';
+import { Empty, Notice, Tag } from '../components/primitives';
+import { IntegrationCard } from '../components/DataGroups';
+import { SheetsIcon } from '../components/icons';
 import { formatDateTime } from '../lib/dates';
 import type { LeadMirrorOutcome, LeadMirrorStatus } from '../data/repository';
 import { STATUS_EXPLANATIONS, STATUS_LABELS, type IntegrationStatus } from '../types/integrations';
@@ -80,14 +82,12 @@ export function LeadMirrorPanel() {
 
   if (mode === 'local' || !loadLeadMirror || !triggerLeadMirror) {
     return (
-      <Section title="Google Sheet lead mirror" note="not available here">
-        <Notice>
-          You are running on this browser alone. Writing to a Google Sheet needs a server
-          to hold the Google credentials, so this starts working once the cockpit is on
-          Supabase. Nothing is lost in the meantime: the Export a backup button above
-          saves everything to a file.
-        </Notice>
-      </Section>
+      <Notice>
+        You are running on this browser alone. Writing to a Google Sheet needs a server
+        to hold the Google credentials, so this starts working once the cockpit is on
+        Supabase. Nothing is lost in the meantime: the Export a backup button in Manual
+        fallback tools saves everything to a file.
+      </Notice>
     );
   }
 
@@ -132,68 +132,64 @@ export function LeadMirrorPanel() {
     (counts.leadsToCreate > 0 || counts.leadsToUpdate > 0 || counts.touchesToCreate > 0);
 
   return (
-    <Section title="Google Sheet lead mirror" note="Google Sheets">
-      <p className="page-lede" style={{ marginTop: 0 }}>
-        The spreadsheet is a readable copy of the pipeline, not where it lives. This
-        cockpit is the real record; the sheet is there so the whole thing can be read on a
-        phone, handed to somebody else, or used to get everything back if this app
-        disappears. Syncing rewrites the sheet from here, so an edit made in the
-        spreadsheet is replaced the next time it runs rather than quietly becoming true.
-      </p>
-
+    <>
       {problem ? <p className="notice notice-crimson">{problem}</p> : null}
 
-      <div className="table-wrap">
-        <table className="data">
-          <thead>
-            <tr>
-              <th>State</th>
-              <th>Spreadsheet</th>
-              <th>Last successful</th>
-              <th>Last attempted</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td data-label="State">
-                <Tag tone={tone(state)} title={STATUS_EXPLANATIONS[state]}>
-                  {STATUS_LABELS[state]}
-                </Tag>
-              </td>
-              <td data-label="Spreadsheet">
-                {/* Written by the server when it last connected, so this is the
-                    sheet it really opened. The spreadsheet id is a server secret
-                    and is deliberately not shown or stored. */}
-                {connection?.provider_account_id ?? (
-                  <span className="quiet">Not connected yet</span>
-                )}
-              </td>
-              <td data-label="Last successful">
-                {lastSuccess ? (
-                  formatDateTime(lastSuccess.completed_at ?? lastSuccess.started_at)
-                ) : (
-                  <span className="quiet">Never</span>
-                )}
-              </td>
-              <td data-label="Last attempted">
-                {lastAttempt ? (
-                  formatDateTime(lastAttempt.started_at)
-                ) : (
-                  <span className="quiet">Never</span>
-                )}
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-
-      {connection?.status === 'error' && connection.error_message ? (
-        <p className="notice notice-crimson">
-          The last attempt failed at {formatDateTime(connection.error_at)}:{' '}
-          {connection.error_message}
-        </p>
-      ) : null}
-
+      <IntegrationCard
+        Icon={SheetsIcon}
+        title="Google Sheets lead mirror"
+        purpose="A readable copy of the pipeline, rewritten from here. Never read back as truth."
+        chip={
+          <Tag tone={tone(state)} title={STATUS_EXPLANATIONS[state]}>
+            {STATUS_LABELS[state]}
+          </Tag>
+        }
+        meta={[
+          {
+            label: 'Spreadsheet',
+            /* Written by the server when it last connected, so this is the sheet
+               it really opened. The spreadsheet id is a server secret and is
+               deliberately not shown or stored. */
+            value: connection?.provider_account_id ?? (
+              <span className="quiet">Not connected yet</span>
+            ),
+          },
+          {
+            label: 'Last successful',
+            value: lastSuccess ? (
+              formatDateTime(lastSuccess.completed_at ?? lastSuccess.started_at)
+            ) : (
+              <span className="quiet">Never</span>
+            ),
+          },
+          {
+            label: 'Last attempted',
+            value: lastAttempt ? (
+              formatDateTime(lastAttempt.started_at)
+            ) : (
+              <span className="quiet">Never</span>
+            ),
+          },
+        ]}
+        error={
+          connection?.status === 'error' && connection.error_message ? (
+            <>
+              The last attempt failed at {formatDateTime(connection.error_at)}:{' '}
+              {connection.error_message}
+            </>
+          ) : null
+        }
+        details={
+          <p>
+            The spreadsheet is a readable copy of the pipeline, not where it lives. This
+            cockpit is the real record; the sheet is there so the whole thing can be read
+            on a phone, handed to somebody else, or used to get everything back if this
+            app disappears. Syncing rewrites the sheet from here, so an edit made in the
+            spreadsheet is replaced the next time it runs rather than quietly becoming
+            true.
+          </p>
+        }
+      >
       <div className="btn-row" style={{ marginTop: '1.25rem' }}>
         <button
           className="btn btn-primary"
@@ -259,7 +255,8 @@ export function LeadMirrorPanel() {
           and never read. Checking first is free and changes nothing, so start there.
         </p>
       ) : null}
-    </Section>
+      </IntegrationCard>
+    </>
   );
 }
 

@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useData } from '../data/context';
-import { Notice, Section, Tag } from '../components/primitives';
+import { Notice, Tag } from '../components/primitives';
+import { IntegrationCard } from '../components/DataGroups';
+import { GoogleCalendarIcon } from '../components/icons';
 import { formatDateTime } from '../lib/dates';
 import type {
   CalendarDisconnectOutcome, CalendarStatus, CalendarSyncOutcome,
@@ -112,13 +114,11 @@ export function CalendarPanel() {
 
   if (mode === 'local' || !loadCalendar || !triggerCalendarSync) {
     return (
-      <Section title="Follow-up calendar" note="not available here">
-        <Notice>
-          You are running on this browser alone. Connecting a Google account needs a
-          server to hold the authorization, so this starts working once the cockpit is
-          on Supabase.
-        </Notice>
-      </Section>
+      <Notice>
+        You are running on this browser alone. Connecting a Google account needs a
+        server to hold the authorization, so this starts working once the cockpit is
+        on Supabase.
+      </Notice>
     );
   }
 
@@ -185,128 +185,127 @@ export function CalendarPanel() {
   const lastAttempt = runs[0] ?? null;
 
   return (
-    <Section title="Follow-up calendar" note="Google Calendar">
-      <p className="page-lede" style={{ marginTop: 0 }}>
-        Connect your Google account once and every open follow-up turns into an all day
-        entry, so your week can be read without opening this app. {CALENDAR_PROMISE} It
-        only goes one way: nothing on your calendar is ever read back and counted as
-        business activity, because an appointment is not evidence that you spoke to
-        anybody. Nothing is ever removed either, because you may have planned your day
-        around it.
-      </p>
-
+    <>
       {returned ? <ReturnNotice outcome={returned} /> : null}
       {problem ? <p className="notice notice-crimson">{problem}</p> : null}
 
-      <div className="table-wrap">
-        <table className="data">
-          <thead>
-            <tr>
-              <th>State</th>
-              <th>Google account</th>
-              <th>Where events go</th>
-              <th>Last successful</th>
-              <th>Last attempted</th>
-              <th>Next scheduled</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td data-label="State">
-                <Tag tone={tone(state)} title={STATUS_EXPLANATIONS[state]}>
-                  {STATUS_LABELS[state]}
-                </Tag>
-              </td>
-              <td data-label="Google account">
-                {/* Learned from an event Google accepted, not from an identity
-                    scope the Cockpit has no other use for, so it stays blank
-                    until the first event lands. */}
-                {connection?.display_name ?? (
-                  <span className="quiet">
-                    {connected ? 'Shown after the first event' : 'Not connected'}
-                  </span>
-                )}
-              </td>
-              <td data-label="Where events go">
-                {connected ? (
-                  'Primary Google Calendar'
-                ) : (
-                  <span className="quiet">Nowhere yet</span>
-                )}
-              </td>
-              <td data-label="Last successful">
-                {lastSuccess ? (
-                  formatDateTime(lastSuccess.completed_at ?? lastSuccess.started_at)
-                ) : (
-                  <span className="quiet">Never</span>
-                )}
-              </td>
-              <td data-label="Last attempted">
-                {lastAttempt ? (
-                  formatDateTime(lastAttempt.started_at)
-                ) : (
-                  <span className="quiet">Never</span>
-                )}
-              </td>
-              <td data-label="Next scheduled">
-                {connected ? SCHEDULE : <span className="quiet">Not scheduled</span>}
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-
-      <div className="btn-row" style={{ marginTop: '1rem' }}>
-        {connected ? (
-          <>
-            <button className="btn" disabled={busy !== null} onClick={() => void sync()}>
-              {busy === 'sync' ? 'Syncing…' : 'Sync now'}
-            </button>
+      <IntegrationCard
+        Icon={GoogleCalendarIcon}
+        title="Google Calendar"
+        purpose="Your open follow-ups, written onto your own primary calendar as all day entries."
+        chip={
+          <Tag tone={tone(state)} title={STATUS_EXPLANATIONS[state]}>
+            {STATUS_LABELS[state]}
+          </Tag>
+        }
+        meta={[
+          {
+            label: 'Google account',
+            /* Learned from an event Google accepted, not from an identity scope
+               the Cockpit has no other use for, so it stays blank until the
+               first event lands. */
+            value: connection?.display_name ?? (
+              <span className="quiet">
+                {connected ? 'Shown after the first event' : 'Not connected'}
+              </span>
+            ),
+          },
+          {
+            label: 'Where events go',
+            value: connected ? (
+              'Primary Google Calendar'
+            ) : (
+              <span className="quiet">Nowhere yet</span>
+            ),
+          },
+          {
+            label: 'Last successful',
+            value: lastSuccess ? (
+              formatDateTime(lastSuccess.completed_at ?? lastSuccess.started_at)
+            ) : (
+              <span className="quiet">Never</span>
+            ),
+          },
+          {
+            label: 'Last attempted',
+            value: lastAttempt ? (
+              formatDateTime(lastAttempt.started_at)
+            ) : (
+              <span className="quiet">Never</span>
+            ),
+          },
+          {
+            label: 'Next scheduled',
+            value: connected ? SCHEDULE : <span className="quiet">Not scheduled</span>,
+          },
+        ]}
+        error={
+          connection?.status === 'error' && connection.error_message ? (
+            <>
+              The last attempt failed at {formatDateTime(connection.error_at)}:{' '}
+              {connection.error_message}
+            </>
+          ) : null
+        }
+        action={
+          connected ? (
+            <>
+              <button className="btn" disabled={busy !== null} onClick={() => void sync()}>
+                {busy === 'sync' ? 'Syncing\u2026' : 'Sync now'}
+              </button>
+              <button
+                className="btn btn-quiet"
+                disabled={busy !== null}
+                onClick={() => void disconnect()}
+              >
+                {busy === 'disconnect' ? 'Disconnecting\u2026' : 'Disconnect'}
+              </button>
+            </>
+          ) : (
             <button
-              className="btn btn-quiet"
-              disabled={busy !== null}
-              onClick={() => void disconnect()}
+              className="btn btn-primary"
+              disabled={busy !== null || !startCalendarOAuth}
+              onClick={() => void connect()}
             >
-              {busy === 'disconnect' ? 'Disconnecting…' : 'Disconnect'}
+              {busy === 'connect' ? 'Opening Google\u2026' : 'Connect Google Calendar'}
             </button>
+          )
+        }
+        details={
+          <>
+            <p>
+              Connect your Google account once and every open follow-up turns into an all
+              day entry, so your week can be read without opening this app.{' '}
+              {CALENDAR_PROMISE}
+            </p>
+            <p>
+              It only goes one way: nothing on your calendar is ever read back and counted
+              as business activity, because an appointment is not evidence that you spoke
+              to anybody. Nothing is ever removed either, because you may have planned
+              your day around it.
+            </p>
+            {connected ? (
+              <p>
+                Only open follow-ups are written, and each one keeps the same entry for
+                the life of the follow-up, so moving a date moves the entry rather than
+                adding a second. Running this twice changes nothing, which is why the
+                button is safe to press as often as you like.
+              </p>
+            ) : (
+              <p>
+                Pressing Connect sends you to Google to sign in and approve one
+                permission: managing events on calendars you own. You will not be asked to
+                create a calendar, to copy an id, or to share anything with anybody. You
+                can disconnect here at any time.
+              </p>
+            )}
           </>
-        ) : (
-          <button
-            className="btn btn-primary"
-            disabled={busy !== null || !startCalendarOAuth}
-            onClick={() => void connect()}
-          >
-            {busy === 'connect' ? 'Opening Google…' : 'Connect Google Calendar'}
-          </button>
-        )}
-      </div>
-
-      {connection?.status === 'error' && connection.error_message ? (
-        <p className="notice notice-crimson">
-          The last attempt failed at {formatDateTime(connection.error_at)}:{' '}
-          {connection.error_message}
-        </p>
-      ) : null}
-
-      {lastRun ? <CalendarRunResult outcome={lastRun} /> : null}
-      {farewell ? <DisconnectResult outcome={farewell} /> : null}
-
-      {connected ? (
-        <p className="notice">
-          Only open follow-ups are written, and each one keeps the same entry for the
-          life of the follow-up, so moving a date moves the entry rather than adding a
-          second. Running this twice changes nothing, which is why the button is safe to
-          press as often as you like.
-        </p>
-      ) : (
-        <p className="notice">
-          Pressing Connect sends you to Google to sign in and approve one permission:
-          managing events on calendars you own. You will not be asked to create a
-          calendar, to copy an id, or to share anything with anybody. You can disconnect
-          here at any time.
-        </p>
-      )}
-    </Section>
+        }
+      >
+        {lastRun ? <CalendarRunResult outcome={lastRun} /> : null}
+        {farewell ? <DisconnectResult outcome={farewell} /> : null}
+      </IntegrationCard>
+    </>
   );
 }
 
