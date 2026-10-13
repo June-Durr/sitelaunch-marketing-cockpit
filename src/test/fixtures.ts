@@ -69,6 +69,8 @@ export function makeTask(over: Partial<Task> = {}): Task {
     id: 'task-1',
     content_item_id: null,
     lead_id: null,
+    deleted_at: null,
+    last_operation: null,
     title: 'Send the revised proposal',
     task_type: 'follow_up',
     status: 'open',

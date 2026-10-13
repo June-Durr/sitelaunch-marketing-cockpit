@@ -395,6 +395,15 @@ export interface Repository {
   loadRecentlyDeleted?(): Promise<TableMap['tasks'][]>;
   /** Supabase adapter only: true while this owner has an unfinished sync queued. */
   loadSyncPending?(): Promise<{ calendar: boolean; leadMirror: boolean }>;
+  /**
+   * Supabase adapter only: ask the worker to run this owner's queue now.
+   *
+   * Fire and forget from the caller's point of view. The queue is durable,
+   * so if this request never arrives the scheduled sweep picks the work up
+   * anyway; what it buys is the calendar catching up in seconds rather than
+   * at the next cron tick.
+   */
+  drainSyncJobs?(): Promise<{ ran: boolean; succeeded: number; failed: number }>;
 }
 
 /** A fresh empty dataset. Use this rather than writing the shape out by hand. */

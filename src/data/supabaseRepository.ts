@@ -437,6 +437,40 @@ export function createSupabaseRepository(): Repository {
       return callUndo(db, 'soft_delete_task', taskId);
     },
 
+    /**
+     * Ask the worker to drain this person's queue now.
+     *
+     * Sends their own session, so the worker claims their jobs and nobody
+     * else's. A failure here is not reported as a failure of the save: the
+     * work is already committed and the scheduled sweep is the backstop.
+     */
+    async drainSyncJobs(): Promise<{ ran: boolean; succeeded: number; failed: number }> {
+      const idle = { ran: false, succeeded: 0, failed: 0 };
+      const { data: session } = await db.auth.getSession();
+      const token = session.session?.access_token;
+      if (!token) return idle;
+
+      try {
+        const response = await fetch(`${functionsBaseUrl()}/run-sync-jobs`, {
+          method: 'POST',
+          headers: {
+            authorization: `Bearer ${token}`,
+            'content-type': 'application/json',
+          },
+          body: '{}',
+        });
+        if (!response.ok) return idle;
+        const body = (await response.json()) as Record<string, unknown>;
+        return {
+          ran: body.status === 'ran',
+          succeeded: typeof body.succeeded === 'number' ? body.succeeded : 0,
+          failed: typeof body.failed === 'number' ? body.failed : 0,
+        };
+      } catch {
+        return idle;
+      }
+    },
+
     /** What is in the bin. Read through a function, because the policy hides them. */
     async loadRecentlyDeleted(): Promise<TableMap['tasks'][]> {
       const { data, error } = await db.rpc('recently_deleted_tasks');

@@ -62,3 +62,17 @@ export function pendingCalendarSync(): {
     sync_error: null,
   };
 }
+
+/**
+ * The bookkeeping columns a brand new task starts with.
+ *
+ * Nobody sets these by hand: a new task is not in the bin and has no previous
+ * state to put back. Collected in one function so adding a third never means
+ * hunting down every place that builds a task.
+ */
+export function freshTaskState(): {
+  deleted_at: null;
+  last_operation: null;
+} {
+  return { deleted_at: null, last_operation: null };
+}

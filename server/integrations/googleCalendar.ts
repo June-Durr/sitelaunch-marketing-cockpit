@@ -42,6 +42,7 @@
 
 import type { GoogleTokenSource } from './googleAuth.ts';
 import { CALENDAR_OAUTH_SCOPE } from './googleOAuth.ts';
+import { displayName } from './leadNames.ts';
 import { redact } from './sanitize.ts';
 
 /**
@@ -183,10 +184,19 @@ export const MANAGED_BY_NOTE =
  * rather than as a day somebody is fully booked.
  */
 export function buildFollowUpEvent(input: FollowUpEventInput): GoogleEventBody {
-  const who = input.prospectName ?? input.taskTitle;
+  /**
+   * The organisation stands in when nobody knows the person's name.
+   *
+   * "Name pending" is not a name, and putting it on somebody's calendar tells
+   * them nothing except that the app has a gap. The same rule runs in the
+   * browser in src/lib/leadLabel.ts; what keeps the two from drifting is that
+   * the placeholder is cleared out of prospect_name in the database, so both
+   * are reading a real null rather than each pattern matching their own way.
+   */
+  const who = displayName(input.prospectName, input.organization) ?? input.taskTitle;
   // A comma rather than a dash: this copy is read by a person, and the house
   // style has no em dashes in it.
-  const summary = input.organization
+  const summary = input.organization && input.organization !== who
     ? `Follow up: ${who}, ${input.organization}`
     : `Follow up: ${who}`;
 
@@ -467,4 +477,161 @@ export function describeCalendarFailure(
 
 function describeFailure(method: string, response: { status: number; body: unknown }): string {
   return describeCalendarFailure(method, calendarFailureDetail(response.status, response.body));
+}
+
+/* ========================================================= the history entry === */
+
+/**
+ * The calendar identity of a completed contact.
+ *
+ * WHY IT IS NOT THE TASK'S ID
+ *
+ * The task's event is the reminder, and it moves every time the follow-up is
+ * rescheduled. What happened on the twelfth happened on the twelfth, and must
+ * stay there. Two records, two identities, so moving one cannot drag the other.
+ *
+ * WHY THIS PREFIX CANNOT COLLIDE WITH A TASK'S
+ *
+ * Twice over. A task id is `slc` plus 32 hex characters, so always 35; this is
+ * `slch` plus 32, so always 36, and no 35-character string equals a
+ * 36-character one. And hex has no `h` in it, so even ignoring length the
+ * fourth character tells them apart.
+ */
+export const HISTORY_EVENT_PREFIX = 'slch';
+
+export function historyEventId(activityId: string): string {
+  const compact = activityId.replace(/-/g, '').toLowerCase();
+  if (!/^[a-v0-9]+$/.test(compact) || compact.length < 2) {
+    throw new Error('Activity id cannot be expressed as a Google event id');
+  }
+  return `${HISTORY_EVENT_PREFIX}${compact}`;
+}
+
+/** Everything the calendar needs to know about one contact that happened. */
+export interface HistoryEventInput {
+  activityId: string;
+  /** The day it happened, confirmed. Never today's date as a stand-in. */
+  occurredOn: string;
+  prospectName: string | null;
+  organization: string | null;
+  channel: string | null;
+  /** The exact wording that was sent, when it was stored. */
+  approvedMessage: string | null;
+  outcome: string | null;
+  /** Set when this contact was later reversed, so the entry can be corrected. */
+  reversed: boolean;
+}
+
+export const HISTORY_MANAGED_NOTE =
+  'This entry is a record of contact, created by SiteLaunch Cockpit. It stays on '
+  + 'the day it happened; the reminder for the next follow-up is a separate entry.';
+
+/**
+ * What one completed contact looks like on a calendar.
+ *
+ * A tick and a name, so a week can be read at a glance: who was actually
+ * contacted, and how. All day, because the Cockpit knows the day and not the
+ * minute, and inventing a time would put a claim on the diary that nothing in
+ * the data supports.
+ */
+export function buildHistoryEvent(input: HistoryEventInput): GoogleEventBody {
+  const who = displayName(input.prospectName, input.organization) ?? 'a contact';
+  const how = input.channel && input.channel.trim() !== ''
+    ? ` by ${input.channel.trim().toLowerCase()}`
+    : '';
+
+  /**
+   * A reversed contact is corrected in place rather than removed.
+   *
+   * Nothing in this integration deletes an event, and that rule does not bend
+   * for a correction. But leaving a tick next to somebody's name when the
+   * contact did not happen is a false claim sitting in their diary, so the
+   * entry is rewritten to say what is now known.
+   */
+  const summary = input.reversed
+    ? `Not sent: ${who}`
+    : `\u2713 Contacted ${who}${how}`;
+
+  const lines = input.reversed
+    ? [
+        'This was recorded as contact and later corrected in the Cockpit.',
+        'No message was sent on this day.',
+        '',
+        'The entry is left here rather than deleted, because removing something '
+        + 'from a diary is not this app\u2019s decision to make.',
+      ]
+    : [
+        input.approvedMessage
+          ? `What was sent:\n${input.approvedMessage}`
+          : 'The exact wording was not recorded.',
+        '',
+        `Outcome: ${input.outcome ?? 'not recorded'}`,
+        `How: ${input.channel ?? 'not recorded'}`,
+        '',
+        HISTORY_MANAGED_NOTE,
+      ];
+
+  return {
+    id: historyEventId(input.activityId),
+    summary,
+    description: lines.join('\n'),
+    start: { date: input.occurredOn },
+    end: { date: dayAfter(input.occurredOn) },
+    // Free, like the reminders. A day with three recorded contacts on it is not
+    // a day somebody is booked.
+    transparency: 'transparent',
+  };
+}
+
+/**
+ * Put one completed contact on the calendar, or correct the one already there.
+ *
+ * Identical in shape to pushFollowUpEvent and for the same reason: creating is
+ * not atomic from this side, so a retry asks for the same id, Google answers
+ * 409, and the answer to that is to patch rather than to create a second.
+ */
+export async function pushHistoryEvent(
+  deps: CalendarDeps,
+  input: HistoryEventInput,
+): Promise<PushResult> {
+  if (!isWritableCalendarId(deps.calendarId, deps.mode)) {
+    throw new Error('Refusing to write to a calendar this authorization does not name');
+  }
+
+  const event = buildHistoryEvent(input);
+  if (!isValidGoogleEventId(event.id)) {
+    throw new Error('Refusing to write an event id Google would reject');
+  }
+
+  const created = await call(deps, '/events', { method: 'POST', body: event });
+  if (created.status >= 200 && created.status < 300) {
+    return {
+      outcome: 'created',
+      eventId: event.id,
+      organizerEmail: eventOrganizerEmail(created.body),
+    };
+  }
+
+  if (created.status === 409) {
+    const patched = await call(deps, `/events/${encodeURIComponent(event.id)}`, {
+      method: 'PATCH',
+      body: {
+        summary: event.summary,
+        description: event.description,
+        start: event.start,
+        end: event.end,
+        status: 'confirmed',
+      },
+    });
+    if (patched.status >= 200 && patched.status < 300) {
+      return {
+        outcome: 'updated',
+        eventId: event.id,
+        organizerEmail: eventOrganizerEmail(patched.body),
+      };
+    }
+    throw new Error(describeCalendarFailure('PATCH', calendarFailureDetail(patched.status, patched.body)));
+  }
+
+  throw new Error(describeCalendarFailure('POST', calendarFailureDetail(created.status, created.body)));
 }

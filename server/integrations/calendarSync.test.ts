@@ -17,7 +17,10 @@ import {
   syncEveryConnectedOwner, syncOneOwner,
   type CalendarRunToSave, type CalendarSyncDeps, type CalendarSyncStore,
 } from './calendarSync.ts';
-import type { FollowUpEventInput } from './googleCalendar.ts';
+import type { FollowUpEventInput, HistoryEventInput } from './googleCalendar.ts';
+import {
+  buildHistoryEvent, calendarEventId, historyEventId, isValidGoogleEventId,
+} from './googleCalendar.ts';
 
 /* ------------------------------------------------------------------ fakes --- */
 
@@ -101,6 +104,7 @@ function fakeGoogle(options: { failFor?: string[] } = {}) {
 
 interface FakeStore extends CalendarSyncStore {
   readonly runs: CalendarRunToSave[];
+  readonly historyWritten: { ownerId: string; activityId: string; eventId: string }[];
   readonly syncedTasks: { ownerId: string; taskId: string; eventId: string }[];
   readonly failedTasks: { ownerId: string; taskId: string }[];
   readonly connectionState: Map<string, { status: string; message: string | null }>;
@@ -117,6 +121,7 @@ interface FakeStore extends CalendarSyncStore {
 function fakeStore(options: {
   tokens: Record<string, string | null>;
   tasks?: Record<string, FollowUpEventInput[]>;
+  history?: Record<string, HistoryEventInput[]>;
   tokenReadThrows?: string[];
   tasksThrowFor?: string[];
 }): FakeStore {
@@ -125,9 +130,20 @@ function fakeStore(options: {
   const failedTasks: { ownerId: string; taskId: string }[] = [];
   const connectionState = new Map<string, { status: string; message: string | null }>();
   const accounts = new Map<string, string>();
+  const historyWritten: { ownerId: string; activityId: string; eventId: string }[] = [];
 
   return {
-    runs, syncedTasks, failedTasks, connectionState, accounts,
+    runs, syncedTasks, failedTasks, connectionState, accounts, historyWritten,
+
+    // No completed contacts to write unless a test supplies them. The default
+    // keeps every existing test about reminders alone.
+    async pendingHistory(ownerId) {
+      return options.history?.[ownerId] ?? [];
+    },
+    async markHistorySynced(ownerId, activityId, _calendarId, eventId) {
+      historyWritten.push({ ownerId, activityId, eventId });
+    },
+    async markHistoryFailed() {},
 
     async connectedOwners() {
       return Object.entries(options.tokens)
@@ -587,5 +603,158 @@ describe('it can only ever address events it created itself', () => {
     expect(second.failedTasks).toHaveLength(2);
     expect(second.syncedTasks).toEqual([]);
     expect(google.calendars.get('access-alice-token')).toEqual(before);
+  });
+});
+
+/* ========================= 4. completed contacts keep their own date === */
+
+function historyEntry(
+  id: string,
+  over: Partial<HistoryEventInput> = {},
+): HistoryEventInput {
+  return {
+    activityId: id,
+    occurredOn: '2026-10-12',
+    prospectName: 'Imaginary Person',
+    organization: 'Imaginary Trades',
+    channel: 'text',
+    approvedMessage: 'Hello, checking in.',
+    outcome: null,
+    reversed: false,
+    ...over,
+  };
+}
+
+describe('a completed contact is written beside the reminder, not instead of it', () => {
+  const ACT = 'aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa';
+  const TASK = 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d';
+
+  it('gives the history its own event id, which cannot collide with a task', () => {
+    const taskEvent = calendarEventId(TASK);
+    const historyEvent = historyEventId(ACT);
+
+    expect(historyEvent.startsWith('slch')).toBe(true);
+    expect(historyEvent).not.toBe(taskEvent);
+    // Two guarantees, not one: different lengths, and hex has no 'h' in it.
+    expect(taskEvent).toHaveLength(35);
+    expect(historyEvent).toHaveLength(36);
+    expect(isValidGoogleEventId(historyEvent)).toBe(true);
+  });
+
+  it('writes both the reminder and the record in one run', async () => {
+    const store = fakeStore({
+      tokens: { [ALICE]: 'alice-token' },
+      tasks: { [ALICE]: [task(TASK)] },
+      history: { [ALICE]: [historyEntry(ACT)] },
+    });
+    const google = fakeGoogle();
+    const result = await syncOneOwner(deps(store, google), ALICE);
+
+    expect(result.created).toBe(1);
+    expect(result.history).toBe(1);
+    // Two separate entries on the calendar, with different ids.
+    const ids = [...(google.calendars.get('access-alice-token')?.keys() ?? [])];
+    expect(ids).toHaveLength(2);
+    expect(ids).toContain(calendarEventId(TASK));
+    expect(ids).toContain(historyEventId(ACT));
+  });
+
+  it('keeps the record on its own day when the reminder moves', async () => {
+    const google = fakeGoogle();
+    const first = fakeStore({
+      tokens: { [ALICE]: 'alice-token' },
+      tasks: { [ALICE]: [task(TASK, { dueDate: '2026-10-19' })] },
+      history: { [ALICE]: [historyEntry(ACT, { occurredOn: '2026-10-12' })] },
+    });
+    await syncOneOwner(deps(first, google), ALICE);
+
+    // The follow-up is rescheduled a week later. The record is not resent.
+    const second = fakeStore({
+      tokens: { [ALICE]: 'alice-token' },
+      tasks: { [ALICE]: [task(TASK, { dueDate: '2026-10-26' })] },
+      history: { [ALICE]: [] },
+    });
+    await syncOneOwner(deps(second, google), ALICE);
+
+    const events = google.calendars.get('access-alice-token');
+    const reminder = events?.get(calendarEventId(TASK)) as Record<string, unknown>;
+    const record = events?.get(historyEventId(ACT)) as Record<string, unknown>;
+
+    expect((reminder.start as { date: string }).date).toBe('2026-10-26');
+    // The thing that happened on the twelfth is still on the twelfth.
+    expect((record.start as { date: string }).date).toBe('2026-10-12');
+  });
+
+  it('creates no duplicate when the same history is synced three times', async () => {
+    const google = fakeGoogle();
+    for (let i = 0; i < 3; i += 1) {
+      const store = fakeStore({
+        tokens: { [ALICE]: 'alice-token' },
+        tasks: { [ALICE]: [] },
+        history: { [ALICE]: [historyEntry(ACT)] },
+      });
+      await syncOneOwner(deps(store, google), ALICE);
+    }
+    expect(google.calendars.get('access-alice-token')?.size).toBe(1);
+  });
+
+  it('corrects the entry in place when the contact was reversed', async () => {
+    const google = fakeGoogle();
+    const before = fakeStore({
+      tokens: { [ALICE]: 'alice-token' },
+      tasks: { [ALICE]: [] },
+      history: { [ALICE]: [historyEntry(ACT)] },
+    });
+    await syncOneOwner(deps(before, google), ALICE);
+
+    const after = fakeStore({
+      tokens: { [ALICE]: 'alice-token' },
+      tasks: { [ALICE]: [] },
+      history: { [ALICE]: [historyEntry(ACT, { reversed: true })] },
+    });
+    await syncOneOwner(deps(after, google), ALICE);
+
+    const record = google.calendars
+      .get('access-alice-token')
+      ?.get(historyEventId(ACT)) as Record<string, unknown>;
+
+    // Still one entry, still on its day, now saying what is actually known.
+    expect(google.calendars.get('access-alice-token')?.size).toBe(1);
+    expect(String(record.summary)).toContain('Not sent');
+    expect(String(record.description)).toContain('No message was sent');
+    // And nothing was deleted to achieve it.
+    for (const request of google.requests) expect(request.method).not.toBe('DELETE');
+  });
+
+  it('says what was sent, when the wording was stored', () => {
+    const event = buildHistoryEvent(historyEntry(ACT, {
+      approvedMessage: 'Hola Janeth, solo queria saber...',
+      channel: 'text',
+    }));
+    expect(event.summary).toBe('\u2713 Contacted Imaginary Person by text');
+    expect(event.description).toContain('Hola Janeth');
+    expect(event.start).toEqual({ date: '2026-10-12' });
+    expect(event.end).toEqual({ date: '2026-10-13' });
+  });
+
+  it('does not pretend to know wording it was never given', () => {
+    const event = buildHistoryEvent(historyEntry(ACT, { approvedMessage: null }));
+    expect(event.description).toContain('The exact wording was not recorded');
+  });
+
+  it('still writes the record when a reminder failed in the same run', async () => {
+    // A record of what happened is worth keeping even on a run where a
+    // reminder could not be written.
+    const store = fakeStore({
+      tokens: { [ALICE]: 'alice-token' },
+      tasks: { [ALICE]: [task('zzzz-not-base32hex')] },
+      history: { [ALICE]: [historyEntry(ACT)] },
+    });
+    const google = fakeGoogle();
+    const result = await syncOneOwner(deps(store, google), ALICE);
+
+    expect(result.failed).toBe(1);
+    expect(result.history).toBe(1);
+    expect(store.historyWritten).toHaveLength(1);
   });
 });

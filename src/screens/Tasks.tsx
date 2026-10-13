@@ -6,6 +6,7 @@ import { relativeDue, today } from '../lib/dates';
 import { readSettings, writeSettings } from '../data/settings';
 import { blankCalendarSync } from '../data/factories';
 import { useTaskActions } from '../data/taskActions';
+import { RecentlyDeleted } from '../components/RecentlyDeleted';
 import type { Task, TaskType } from '../types/domain';
 import { TASK_TYPE_LABELS } from '../types/domain';
 
@@ -16,7 +17,7 @@ export function Tasks() {
   // The confirmation, the Undo and the "Saving…" state all live here, so
   // Today and Tasks cannot drift into saying different things.
   const actions = useTaskActions();
-  const { data, insert, remove } = ctx;
+  const { data, insert } = ctx;
   const [creating, setCreating] = useState(false);
   const [showDone, setShowDone] = useState(() => readSettings().showCompletedTasks);
 
@@ -39,7 +40,12 @@ export function Tasks() {
     return (
       <ul className="queue">
         {tasks.map((task) => (
-          <li key={task.id}>
+          <li
+            key={task.id}
+            // Worn for a moment after the write lands, so the row you clicked
+            // does not simply vanish out from under the pointer.
+            className={actions.recentlyDone.has(task.id) ? 'row-just-done' : undefined}
+          >
             <div className="queue-main">
               <div className="queue-title">{task.title}</div>
               <div className="queue-meta">
@@ -47,6 +53,13 @@ export function Tasks() {
                 {contentTitle(task) ? ` · ${contentTitle(task)}` : ''}
                 {task.notes ? ` · ${task.notes}` : ''}
               </div>
+              {/* Beside the row that failed, not in place of it. Nothing was
+                  saved, so removing the row would be a lie. */}
+              {actions.errors.get(task.id) ? (
+                <div className="row-error" role="alert">
+                  Not saved: {actions.errors.get(task.id)}
+                </div>
+              ) : null}
             </div>
             <div className="queue-side">
               <span
@@ -79,7 +92,19 @@ export function Tasks() {
               ) : (
                 <>
                   <Tag tone="quiet">{task.status}</Tag>
-                  <button className="btn btn-quiet" onClick={() => remove('tasks', task.id)}>
+                  {/* Recovery after the confirmation has gone. Offered only
+                      while there is really something stored to put back. */}
+                  {task.last_operation ? (
+                    <button
+                      className="btn btn-quiet"
+                      disabled={actions.busyId !== null}
+                      title="Put this back as it was."
+                      onClick={() => void actions.undoFor(task)}
+                    >
+                      {actions.busyId === task.id ? 'Undoing…' : 'Undo'}
+                    </button>
+                  ) : null}
+                  <button className="btn btn-quiet" onClick={() => void actions.bin(task)}>
                     Delete
                   </button>
                 </>
@@ -143,6 +168,7 @@ export function Tasks() {
       )}
 
       {creating ? <TaskForm onClose={() => setCreating(false)} /> : null}
+      <RecentlyDeleted />
     </>
   );
 
@@ -209,6 +235,8 @@ export function Tasks() {
               await insert('tasks', {
                 content_item_id: contentId || null,
                 lead_id: leadId || null,
+                deleted_at: null,
+                last_operation: null,
                 title: title.trim(),
                 task_type: taskType,
                 status: 'open',

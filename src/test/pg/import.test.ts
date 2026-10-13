@@ -22,7 +22,7 @@ let t: TestDatabase;
 
 beforeEach(async () => {
   t = await freshDatabase();
-});
+}, 180_000);
 
 afterEach(async () => {
   await t.close();

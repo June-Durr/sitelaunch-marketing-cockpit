@@ -271,9 +271,36 @@ export interface Task {
   last_synced_at: string | null;
   sync_error: string | null;
 
+  /**
+   * Set when this task is in the bin.
+   *
+   * Row level security hides these from every ordinary read, so a task carrying
+   * a date here does not normally reach the browser at all. It arrives only
+   * through recently_deleted_tasks(), which is what the restore list reads.
+   */
+  deleted_at: string | null;
+
+  /**
+   * Enough of the previous state to reverse the last thing done to this task.
+   *
+   * Present means there is something to undo, which is how a row offers recovery
+   * after the confirmation has timed out. Only the most recent operation is
+   * undoable; a second correction is a deliberate edit rather than an undo. See
+   * supabase/migrations/0011_undo_and_recovery.sql.
+   */
+  last_operation: TaskOperation | null;
+
   is_seed: boolean;
   created_at: string;
   updated_at: string;
+}
+
+/** What was done to a task, kept so it can be undone. */
+export interface TaskOperation {
+  operation: 'task_done' | 'task_skip' | 'task_delete';
+  at: string;
+  activity_id?: string;
+  [key: string]: unknown;
 }
 
 /** A record that something happened. See ActivityType for the distinction. */

@@ -55,7 +55,8 @@ import {
   createServiceClient, markConnectionError, markConnectionSynced,
 } from '../_shared/supabaseStore.ts';
 import {
-  fetchPushableTasks, markTaskSyncFailed, markTaskSynced, saveCalendarRun,
+  fetchPendingHistory, fetchPushableTasks, markHistoryFailed, markHistorySynced,
+  markTaskSyncFailed, markTaskSynced, saveCalendarRun,
 } from '../_shared/calendarStore.ts';
 import { connectedOwners, readRefreshToken } from '../_shared/calendarOAuthStore.ts';
 
@@ -95,6 +96,11 @@ function storeOver(client: SupabaseClient): CalendarSyncStore {
     connectedOwners: () => connectedOwners(client),
     readRefreshToken: (ownerId) => readRefreshToken(client, ownerId),
     pushableTasks: (ownerId) => fetchPushableTasks(client, ownerId),
+    pendingHistory: (ownerId) => fetchPendingHistory(client, ownerId),
+    markHistorySynced: (ownerId, activityId, calendarId, eventId) =>
+      markHistorySynced(client, ownerId, activityId, calendarId, eventId),
+    markHistoryFailed: (ownerId, activityId, message) =>
+      markHistoryFailed(client, ownerId, activityId, message),
     markTaskSynced: (ownerId, taskId, calendarId, eventId) =>
       markTaskSynced(client, ownerId, taskId, calendarId, eventId),
     markTaskSyncFailed: (ownerId, taskId, message) =>

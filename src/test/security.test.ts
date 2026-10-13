@@ -30,12 +30,16 @@ const sqlWithoutTokenStore = readdirSync(dir)
   .filter(
     (f) =>
       f.endsWith('.sql') &&
-      // 0010 holds the OAuth token store; 0012 and 0013 grant their own
-      // functions to service_role, which is the point of them. All three
+      // 0010 holds the OAuth token store; 0012, 0013 and 0014 grant their own
+      // functions to service_role, which is the point of them. All five
       // are excluded from this blanket word search and asserted on
       // directly further down, because a text match over them would
       // either pass by accident or force them to be written dishonestly.
-      !f.startsWith('0010_') && !f.startsWith('0012_') && !f.startsWith('0013_'),
+      !f.startsWith('0010_') &&
+      !f.startsWith('0012_') &&
+      !f.startsWith('0013_') &&
+      !f.startsWith('0014_') &&
+      !f.startsWith('0015_'),
   )
   .map((f) => sqlFor(f))
   .join('\n');
@@ -1170,5 +1174,49 @@ describe('the recurring follow-up task is identified by a column, not by prose',
 
   it('defaults to a dry run, so writing has to be asked for', () => {
     expect(statements).toContain('dry_run boolean default true');
+  });
+});
+
+/**
+ * The worker's claim functions.
+ *
+ * Two of them, deliberately, because a single function with an optional owner
+ * argument would mean a null quietly meaning "everyone", which is the kind of
+ * default that becomes a leak.
+ */
+describe('the sync worker can only claim what it is scoped to', () => {
+  const worker = sqlFor('0014_sync_worker.sql');
+
+  it('keeps both claim functions to the service role', () => {
+    expect(worker).toContain('revoke all on function claim_sync_jobs_for_owner');
+    expect(worker).toMatch(
+      /grant execute on function claim_sync_jobs_for_owner[^;]*to service_role/,
+    );
+    expect(worker).not.toMatch(
+      /grant execute on function claim_sync_jobs_for_owner[^;]*to authenticated/,
+    );
+  });
+
+  it('scopes the owner claim to one owner, with no default', () => {
+    const at = worker.indexOf('function claim_sync_jobs_for_owner');
+    const body = worker.slice(at, worker.indexOf('$$;', at));
+    expect(body).toContain('where owner_id = p_owner');
+    // No default on the owner argument: forgetting it must be a syntax error,
+    // not a sweep of everybody.
+    expect(body).not.toMatch(/p_owner\s+uuid\s+default/);
+  });
+
+  it('never reports success for a job it only started', () => {
+    const fn = readFileSync('supabase/functions/run-sync-jobs/index.ts', 'utf8');
+    // finish_sync_job is called with a real outcome, and an HTTP 200 carrying
+    // a failed status is still a failure.
+    expect(fn).toContain('p_ok: ok || permanent');
+    expect(fn).toContain("body.status !== 'failed'");
+  });
+
+  it('refuses to write one owner records into another owner spreadsheet', () => {
+    const fn = readFileSync('supabase/functions/run-sync-jobs/index.ts', 'utf8');
+    expect(fn).toContain('no spreadsheet is configured for this owner');
+    expect(fn).toContain('ownerId !== mirrorOwner');
   });
 });

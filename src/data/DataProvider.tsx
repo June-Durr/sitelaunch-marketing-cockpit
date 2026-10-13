@@ -172,6 +172,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
         ? () => repo.loadRecentlyDeleted!()
         : null,
       loadSyncPending: repo.loadSyncPending ? () => repo.loadSyncPending!() : null,
+      drainSyncJobs: repo.drainSyncJobs ? () => repo.drainSyncJobs!() : null,
     }),
     [data, error, loading, refresh, repo],
   );

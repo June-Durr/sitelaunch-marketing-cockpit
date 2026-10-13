@@ -57,6 +57,16 @@ export interface TaskActions {
   done(task: Task, options?: { channel?: string | null; approvedMessage?: string | null }): Promise<void>;
   skip(task: Task): Promise<void>;
   bin(task: Task): Promise<void>;
+  /** Bring a binned task back, from the Recently deleted list. */
+  restore(task: Task): Promise<void>;
+  /**
+   * Reverse the last operation on a task, from the row rather than the toast.
+   *
+   * The confirmation lasts about five seconds, which is right for a
+   * confirmation and useless as recovery. A row that has something to undo
+   * offers it for as long as that remains true.
+   */
+  undoFor(task: Task): Promise<void>;
   toast: ToastState | null;
   dismissToast(): void;
 }
@@ -74,7 +84,9 @@ export function useTaskActions(): TaskActions {
 
 export function TaskActionsProvider({ children }: { children: ReactNode }) {
   const ctx = useData();
-  const { data, repoCompleteTask, repoUndo, repoSkip, repoBin } = useRepoActions();
+  const {
+    data, repoCompleteTask, repoUndo, repoSkip, repoBin, repoDrain,
+  } = useRepoActions();
 
   const [busyId, setBusyId] = useState<string | null>(null);
   const [recentlyDone, setRecentlyDone] = useState<Set<string>>(new Set());
@@ -102,6 +114,37 @@ export function TaskActionsProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
+  /**
+   * Ask the worker to run this person's queue, and say what came back.
+   *
+   * Not awaited by the thing that saved: the save is already committed and the
+   * queue is durable, so a slow or failed drain must not hold up the
+   * confirmation or turn a successful save into a visible failure. What it
+   * changes is the second line of the confirmation, from "calendar syncing" to
+   * "calendar synced", and only when the worker really reported success.
+   */
+  const drainAndReport = useCallback(
+    (toastIdAtSave: number) => {
+      if (!repoDrain) return;
+      void repoDrain().then((result) => {
+        if (!result.ran || result.succeeded === 0) return;
+        setToast((current) => {
+          // Only if the same confirmation is still on screen. Overwriting a
+          // later message with the outcome of an earlier save would be worse
+          // than saying nothing.
+          if (!current || current.id !== toastIdAtSave) return current;
+          return {
+            ...current,
+            detail: result.failed > 0
+              ? 'Saved. Calendar synced; something else in the queue did not.'
+              : 'Saved and synced.',
+          };
+        });
+      });
+    },
+    [repoDrain],
+  );
+
   const linger = useCallback((taskId: string) => {
     setRecentlyDone((prev) => new Set(prev).add(taskId));
     setTimeout(() => {
@@ -122,6 +165,9 @@ export function TaskActionsProvider({ children }: { children: ReactNode }) {
 
       if (result.status === 'undone') {
         show({ tone: 'neutral', message: 'Put back as it was.' });
+        // Undo queues its own syncs, because the calendar now says the wrong
+        // date. Run them for the same reason a completion does.
+        drainAndReport(toastId.current);
         return;
       }
       if (result.status === 'conflict') {
@@ -147,7 +193,7 @@ export function TaskActionsProvider({ children }: { children: ReactNode }) {
         detail: result.error ?? result.status,
       });
     },
-    [repoUndo, ctx, show],
+    [repoUndo, ctx, show, drainAndReport],
   );
 
   const done = useCallback(
@@ -193,6 +239,9 @@ export function TaskActionsProvider({ children }: { children: ReactNode }) {
 
           await ctx.refresh();
           linger(task.id);
+          // The queue already holds the request; this only asks for it to be
+          // run now rather than at the next scheduled sweep.
+          drainAndReport(toastId.current + 1);
           show(confirmation(task, lead, result.nextDueDate, options.channel ?? lead?.preferred_channel ?? null, plan?.reason ?? null, repoUndo ? () => void undo(task.id) : null));
           return;
         }
@@ -216,7 +265,10 @@ export function TaskActionsProvider({ children }: { children: ReactNode }) {
         setBusyId(null);
       }
     },
-    [busyId, clearError, data, repoCompleteTask, repoUndo, ctx, linger, noteError, show, undo],
+    [
+      busyId, clearError, data, repoCompleteTask, repoUndo, ctx, linger,
+      noteError, show, undo, drainAndReport,
+    ],
   );
 
   const skip = useCallback(
@@ -273,9 +325,38 @@ export function TaskActionsProvider({ children }: { children: ReactNode }) {
     [busyId, repoBin, repoUndo, ctx, noteError, show, undo],
   );
 
+  const restore = useCallback(
+    async (task: Task) => {
+      if (busyId !== null) return;
+      setBusyId(task.id);
+      try {
+        await undo(task.id);
+      } finally {
+        setBusyId(null);
+      }
+    },
+    [busyId, undo],
+  );
+
+  const undoFor = useCallback(
+    async (task: Task) => {
+      if (busyId !== null) return;
+      setBusyId(task.id);
+      try {
+        await undo(task.id);
+      } finally {
+        setBusyId(null);
+      }
+    },
+    [busyId, undo],
+  );
+
   const value = useMemo<TaskActions>(
-    () => ({ busyId, recentlyDone, errors, done, skip, bin, toast, dismissToast }),
-    [busyId, recentlyDone, errors, done, skip, bin, toast, dismissToast],
+    () => ({
+      busyId, recentlyDone, errors, done, skip, bin, restore, undoFor,
+      toast, dismissToast,
+    }),
+    [busyId, recentlyDone, errors, done, skip, bin, restore, undoFor, toast, dismissToast],
   );
 
   return <TaskActionsContext.Provider value={value}>{children}</TaskActionsContext.Provider>;
@@ -338,5 +419,6 @@ function useRepoActions() {
     repoUndo: ctx.undoTaskOperation,
     repoSkip: ctx.skipTaskDurably,
     repoBin: ctx.softDeleteTask,
+    repoDrain: ctx.drainSyncJobs,
   };
 }

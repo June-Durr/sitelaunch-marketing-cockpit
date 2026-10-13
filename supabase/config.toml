@@ -52,3 +52,12 @@ verify_jwt = false
 # ends the request having changed nothing.
 [functions.calendar-oauth-callback]
 verify_jwt = false
+
+# The sync worker.
+#
+# Two callers, and the function tells them apart itself: the scheduler with the
+# shared secret and no Authorization header at all, and a signed in person
+# asking for their own queue to be drained the moment a save commits. Platform
+# JWT checking would reject the first before the body ran.
+[functions.run-sync-jobs]
+verify_jwt = false

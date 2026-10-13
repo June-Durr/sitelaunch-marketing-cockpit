@@ -25,7 +25,7 @@ let t: TestDatabase;
 
 beforeAll(async () => {
   t = await freshDatabase();
-}, 120_000);
+}, 180_000);
 
 afterAll(async () => {
   await t?.close();

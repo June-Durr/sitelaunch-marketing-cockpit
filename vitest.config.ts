@@ -4,6 +4,16 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
   plugins: [react()],
   test: {
+    /*
+     * Fifteen migrations, applied to a real Postgres in WebAssembly, in seven
+     * separate database test files that run alongside the jsdom ones. The
+     * default five seconds was fine when there were eleven; under the
+     * contention that now exists a passing test can take longer than that and
+     * fail for no reason anybody can act on. Raised rather than papered over
+     * with retries, which would hide a genuine hang.
+     */
+    testTimeout: 30_000,
+    hookTimeout: 180_000,
     environment: 'jsdom',
     globals: false,
     setupFiles: ['./src/test/setup.ts'],

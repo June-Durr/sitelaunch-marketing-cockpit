@@ -128,6 +128,7 @@ function supabaseContext(options: {
     softDeleteTask: null,
     loadRecentlyDeleted: null,
     loadSyncPending: null,
+    drainSyncJobs: null,
     startCalendarOAuth: null,
     disconnectCalendar: null,
   };

@@ -118,6 +118,7 @@ function supabaseContext(options: {
     softDeleteTask: null,
     loadRecentlyDeleted: null,
     loadSyncPending: null,
+    drainSyncJobs: null,
     startCalendarOAuth:
       options.start
       ?? (async (): Promise<CalendarOAuthStart> => ({

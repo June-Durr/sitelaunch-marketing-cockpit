@@ -538,3 +538,56 @@ describe('a completed contact gets its own calendar identity', () => {
     expect(activity.wanted).toBe('false');
   });
 });
+
+/* ============================ the undo payload survives a repeat call === */
+
+describe('a repeat completion does not rewrite what undo needs', () => {
+  it('undoes to the state before the first completion, not between them', async () => {
+    /**
+     * Found against the hosted database, not here.
+     *
+     * A second call with a different token is not a retry: it runs the whole
+     * body again. The activity is correctly reused, but the task update used to
+     * run twice and rewrote last_operation with the row as it stood after the
+     * first completion, so Undo restored the already-moved date.
+     */
+    const { leadId, taskId } = await seedFollowUp(USER_A);
+
+    await complete(USER_A, taskId, 'first', { nextDue: '2026-10-20' });
+    await complete(USER_A, taskId, 'second', { nextDue: '2026-10-27' });
+
+    await t.asUser(USER_A, () => rows('select undo_task_operation($1)', [taskId]));
+
+    const [task] = await rows<Record<string, string>>(
+      'select due_date::text as due_date from tasks where id = $1', [taskId],
+    );
+    const [lead] = await rows<Record<string, string>>(
+      'select next_action_date::text as next_action_date from leads where id = $1', [leadId],
+    );
+
+    // All the way back to where it started, not to the date the first call set.
+    expect(task.due_date).toBe('2026-10-12');
+    expect(lead.next_action_date).toBe('2026-10-12');
+  });
+
+  it('still allows a fresh undo after a completion that followed an undo', async () => {
+    // The payload is cleared by undo, so the next genuine completion writes a
+    // new one and a second undo still works.
+    const { taskId } = await seedFollowUp(USER_A);
+    await complete(USER_A, taskId, 'a', { nextDue: '2026-10-20' });
+    await t.asUser(USER_A, () => rows('select undo_task_operation($1)', [taskId]));
+    await complete(USER_A, taskId, 'b', { nextDue: '2026-11-03' });
+
+    const [result] = await t.asUser(USER_A, () =>
+      rows<{ undo_task_operation: Record<string, unknown> }>(
+        'select undo_task_operation($1)', [taskId],
+      ),
+    );
+    expect(result.undo_task_operation.status).toBe('undone');
+
+    const [task] = await rows<Record<string, string>>(
+      'select due_date::text as due_date from tasks where id = $1', [taskId],
+    );
+    expect(task.due_date).toBe('2026-10-12');
+  });
+});

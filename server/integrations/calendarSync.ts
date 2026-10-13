@@ -25,7 +25,8 @@
 
 import { UserRefreshTokenSource } from './googleAuth.ts';
 import {
-  PRIMARY_CALENDAR_ID, pushFollowUpEvent, type CalendarDeps, type FollowUpEventInput,
+  PRIMARY_CALENDAR_ID, pushFollowUpEvent, pushHistoryEvent,
+  type CalendarDeps, type FollowUpEventInput, type HistoryEventInput,
 } from './googleCalendar.ts';
 import { sanitizeError } from './sanitize.ts';
 
@@ -51,6 +52,18 @@ export interface CalendarSyncStore {
   readRefreshToken(ownerId: string): Promise<string | null>;
   /** Their open follow-up tasks, with the lead details the event needs. */
   pushableTasks(ownerId: string): Promise<FollowUpEventInput[]>;
+  /**
+   * Completed contacts that still owe the calendar a visit.
+   *
+   * Two kinds, and the second is the reason this is not simply "unsynced
+   * history": a contact that was recorded and later reversed already has an
+   * entry saying it happened, and that entry has to be corrected.
+   */
+  pendingHistory(ownerId: string): Promise<HistoryEventInput[]>;
+  markHistorySynced(
+    ownerId: string, activityId: string, calendarId: string, eventId: string,
+  ): Promise<void>;
+  markHistoryFailed(ownerId: string, activityId: string, message: string): Promise<void>;
   markTaskSynced(
     ownerId: string, taskId: string, calendarId: string, eventId: string,
   ): Promise<void>;
@@ -100,6 +113,8 @@ export interface OwnerResult {
   updated: number;
   failed: number;
   tasks: number;
+  /** Completed contacts written or corrected on the calendar this run. */
+  history: number;
   error: string | null;
   /** Set when the run stopped before reaching every task it could have. */
   stoppedEarly: 'limit' | 'repeated_failure' | null;
@@ -112,6 +127,7 @@ export interface SweepResult {
   updated: number;
   failed: number;
   tasks: number;
+  history: number;
   results: OwnerResult[];
 }
 
@@ -132,7 +148,9 @@ export async function syncOneOwner(
   const startedAt = clock().toISOString();
   const asOf = startedAt.slice(0, 10);
   const idempotencyKey = `google_calendar:export:${asOf}`;
-  const nothing = { created: 0, updated: 0, failed: 0, tasks: 0, stoppedEarly: null };
+  const nothing = {
+    created: 0, updated: 0, failed: 0, tasks: 0, history: 0, stoppedEarly: null,
+  };
 
   let calendar: CalendarDeps;
   try {
@@ -219,6 +237,30 @@ export async function syncOneOwner(
       }
     }
 
+    /**
+     * The history pass.
+     *
+     * Deliberately after the reminders and deliberately not gated on them
+     * succeeding: a record of what happened is worth writing even on a run where
+     * a reminder could not be. Each entry carries its own id derived from the
+     * activity, so this is idempotent in exactly the way the task pass is, and a
+     * repeated sync patches rather than duplicating.
+     */
+    let history = 0;
+    for (const entry of await deps.store.pendingHistory(ownerId)) {
+      try {
+        const result = await pushHistoryEvent(calendar, entry);
+        await deps.store.markHistorySynced(
+          ownerId, entry.activityId, PRIMARY_CALENDAR_ID, result.eventId,
+        );
+        history += 1;
+      } catch (error) {
+        const summary = sanitizeError(error);
+        if (failures.length < 5) failures.push(summary);
+        await deps.store.markHistoryFailed(ownerId, entry.activityId, summary);
+      }
+    }
+
     const attempted = created + updated + failed;
     const status: 'succeeded' | 'failed' =
       failed > 0 && failed === attempted ? 'failed' : 'succeeded';
@@ -238,7 +280,7 @@ export async function syncOneOwner(
       errorSummary: status === 'failed' ? (errorSummary ?? 'Every event failed') : null,
       details: {
         action: 'export', created, updated, failed,
-        tasks: attempted, openTasks: everyTask.length, stoppedEarly, asOf,
+        tasks: attempted, openTasks: everyTask.length, history, stoppedEarly, asOf,
       },
     });
 
@@ -262,7 +304,7 @@ export async function syncOneOwner(
     }
 
     return {
-      ownerId, status, created, updated, failed, tasks: attempted,
+      ownerId, status, created, updated, failed, tasks: attempted, history,
       error: errorSummary, stoppedEarly,
     };
   } catch (error) {
@@ -318,8 +360,9 @@ export async function syncEveryConnectedOwner(deps: CalendarSyncDeps): Promise<S
       updated: sum.updated + r.updated,
       failed: sum.failed + r.failed,
       tasks: sum.tasks + r.tasks,
+      history: sum.history + r.history,
     }),
-    { created: 0, updated: 0, failed: 0, tasks: 0 },
+    { created: 0, updated: 0, failed: 0, tasks: 0, history: 0 },
   );
 
   return {

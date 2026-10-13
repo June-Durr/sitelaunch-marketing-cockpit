@@ -48,6 +48,8 @@ export const MIGRATION_FILES = [
   '0011_undo_and_recovery.sql',
   '0012_durable_completion.sql',
   '0013_undo_operations.sql',
+  '0014_sync_worker.sql',
+  '0015_undo_payload_fix.sql',
 ];
 
 export const USER_A = '11111111-1111-1111-1111-111111111111';

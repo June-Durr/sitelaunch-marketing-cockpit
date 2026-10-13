@@ -69,6 +69,8 @@ export interface DataContextValue {
   softDeleteTask: ((taskId: string) => Promise<UndoOutcome>) | null;
   loadRecentlyDeleted: (() => Promise<TableMap['tasks'][]>) | null;
   loadSyncPending: (() => Promise<{ calendar: boolean; leadMirror: boolean }>) | null;
+  /** Null in browser-local mode. Asks the worker to run this owner's queue. */
+  drainSyncJobs: (() => Promise<{ ran: boolean; succeeded: number; failed: number }>) | null;
 }
 
 export const DataContext = createContext<DataContextValue>({
@@ -106,6 +108,7 @@ export const DataContext = createContext<DataContextValue>({
   softDeleteTask: null,
   loadRecentlyDeleted: null,
   loadSyncPending: null,
+  drainSyncJobs: null,
 });
 
 export function useData(): DataContextValue {

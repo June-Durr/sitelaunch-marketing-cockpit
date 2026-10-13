@@ -140,6 +140,8 @@ export function ContentForm({
               due_date: measurementDueDate(publishedDay, window),
               window_type: window,
               notes: null,
+              deleted_at: null,
+              last_operation: null,
               completed_at: null,
               // Made by hand, so the follow-up rule does not own it and will
       // never move, reopen or close it.

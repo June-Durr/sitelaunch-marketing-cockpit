@@ -14,17 +14,17 @@
  * to show.
  */
 
-export interface LabelledLead {
-  prospect_name: string | null;
-  organization: string | null;
-}
-
 /**
  * Placeholders that have been used in place of a real name.
  *
- * Matched loosely because they arrived by hand and by import: "Name pending",
- * "name pending", and the dashed form that one imported record uses all mean
- * the same thing. Anything matching is treated as no name at all.
+ * This is a twin of leadNames.ts on the server side, which the calendar and the
+ * sheet mirror use. They are separate because the browser is not allowed to
+ * import anything from that layer, and a test asserts the two agree on every
+ * input rather than trusting them to stay in step. That is the same arrangement
+ * reconcile_follow_up_tasks already has with src/config/followUpTasks.ts.
+ *
+ * The path is not written out here on purpose: the test that enforces the
+ * boundary matches on the literal text, so naming it would fail the build.
  *
  * The dash is written as an escape rather than typed, because this project's
  * copy rule forbids that character in source and a test enforces it.
@@ -37,6 +37,11 @@ export function isPlaceholderName(name: string | null): boolean {
   const trimmed = name.trim();
   if (trimmed === '') return true;
   return PLACEHOLDER.test(trimmed) || trimmed.toLowerCase() === 'name pending';
+}
+
+export interface LabelledLead {
+  prospect_name: string | null;
+  organization: string | null;
 }
 
 /**

@@ -119,6 +119,7 @@ function context(over: Partial<DataContextValue> = {}): DataContextValue {
     softDeleteTask: null,
     loadRecentlyDeleted: null,
     loadSyncPending: null,
+    drainSyncJobs: null,
     startCalendarOAuth: async () => ({ status: 'ready', authorizeUrl: null, error: null }),
     disconnectCalendar: async () => ({
       ok: true, status: 'disconnected', revokedAtGoogle: true, eventsRemoved: false,

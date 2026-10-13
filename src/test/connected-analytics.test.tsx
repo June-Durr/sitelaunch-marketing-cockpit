@@ -162,6 +162,7 @@ function supabaseContext(status: AnalyticsStatus): DataContextValue {
     softDeleteTask: null,
     loadRecentlyDeleted: null,
     loadSyncPending: null,
+    drainSyncJobs: null,
     startCalendarOAuth: null,
     disconnectCalendar: null,
     triggerSync: async () => ({ ok: true, status: 'succeeded', rowsWritten: 0, error: null }),

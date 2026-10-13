@@ -13,7 +13,9 @@
 
 import type { SupabaseClient } from 'jsr:@supabase/supabase-js@2';
 
-import type { FollowUpEventInput } from '../../../server/integrations/googleCalendar.ts';
+import type {
+  FollowUpEventInput, HistoryEventInput,
+} from '../../../server/integrations/googleCalendar.ts';
 import type { SyncStatus } from '../../../server/integrations/types.ts';
 
 /** One open follow-up, with the lead details the event description needs. */
@@ -167,4 +169,103 @@ export async function saveCalendarRun(
   );
 
   if (error) throw new Error(`sync_runs upsert failed: ${error.message}`);
+}
+
+/* ------------------------------------------------- completed contact history --- */
+
+/**
+ * The completed contacts that still owe the calendar a visit.
+ *
+ * Two kinds, and the union is deliberate. The first is a contact that was
+ * recorded and has not reached the calendar yet. The second is one that was
+ * recorded, reached the calendar, and has since been reversed: the entry out
+ * there says it happened, and that has to be corrected. Selecting only on the
+ * wanted flag would miss the second, because by then the flag says false.
+ */
+export async function fetchPendingHistory(
+  client: SupabaseClient,
+  ownerId: string,
+): Promise<HistoryEventInput[]> {
+  const { data, error } = await client
+    .from('activity_events')
+    .select(
+      'id, occurred_at, channel, approved_message, outcome, reversed_at,'
+        + ' external_event_id, calendar_history_wanted, calendar_sync_status,'
+        + ' leads ( prospect_name, organization )',
+    )
+    .eq('owner_id', ownerId)
+    .or(
+      'and(calendar_history_wanted.eq.true,calendar_sync_status.in.(pending,error)),'
+        + 'and(reversed_at.not.is.null,external_event_id.not.is.null)',
+    )
+    .order('occurred_at', { ascending: true })
+    .limit(200);
+
+  if (error) throw new Error(`history read failed: ${error.message}`);
+
+  return ((data ?? []) as unknown as HistoryRow[]).map((row) => ({
+    activityId: row.id,
+    // The day it happened, from the record. Never today's date as a stand-in.
+    occurredOn: row.occurred_at.slice(0, 10),
+    prospectName: row.leads?.prospect_name ?? null,
+    organization: row.leads?.organization ?? null,
+    channel: row.channel,
+    approvedMessage: row.approved_message,
+    outcome: row.outcome,
+    reversed: row.reversed_at !== null,
+  }));
+}
+
+interface HistoryRow {
+  id: string;
+  occurred_at: string;
+  channel: string | null;
+  approved_message: string | null;
+  outcome: string | null;
+  reversed_at: string | null;
+  external_event_id: string | null;
+  leads: { prospect_name: string | null; organization: string | null } | null;
+}
+
+/** Record that a completed contact is now on the calendar. */
+export async function markHistorySynced(
+  client: SupabaseClient,
+  ownerId: string,
+  activityId: string,
+  calendarId: string,
+  eventId: string,
+): Promise<void> {
+  const { error } = await client
+    .from('activity_events')
+    .update({
+      external_calendar_id: calendarId,
+      external_event_id: eventId,
+      calendar_sync_status: 'synced',
+      last_synced_at: new Date().toISOString(),
+      sync_error: null,
+    })
+    .eq('id', activityId)
+    .eq('owner_id', ownerId);
+
+  if (error) throw new Error(`history sync state failed: ${error.message}`);
+}
+
+/**
+ * Record that it could not be written, without losing where it lives.
+ *
+ * The external ids stay exactly as they were, for the same reason they do on a
+ * task: clearing them would mean the next good run created a second entry
+ * instead of correcting the one already in somebody's week.
+ */
+export async function markHistoryFailed(
+  client: SupabaseClient,
+  ownerId: string,
+  activityId: string,
+  message: string,
+): Promise<void> {
+  await client
+    .from('activity_events')
+    .update({ calendar_sync_status: 'error', sync_error: message })
+    .eq('id', activityId)
+    .eq('owner_id', ownerId);
 }

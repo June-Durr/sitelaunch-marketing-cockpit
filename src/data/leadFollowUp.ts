@@ -26,7 +26,7 @@ import { NON_TOUCH_ACTIVITY, planNextAction, type NextActionPlan } from '../conf
 import {
   planFollowUpTasks, type FollowUpTaskPlan,
 } from '../config/followUpTasks';
-import { pendingCalendarSync } from './factories';
+import { freshTaskState, pendingCalendarSync } from './factories';
 import { dayOf } from '../lib/dates';
 
 /** Does logging this activity type against a lead count as contact with them? */
@@ -87,6 +87,7 @@ export async function recordContact(
       completed_at: null,
       follow_up_rule_managed: true,
       ...pendingCalendarSync(),
+      ...freshTaskState(),
       is_seed: false,
     });
   } else {
@@ -185,6 +186,7 @@ export async function reconcileFollowUpTasks(
         external_calendar_id: null,
         external_event_id: null,
         last_synced_at: null,
+        ...freshTaskState(),
         is_seed: false,
         ...entry.fields,
       });
