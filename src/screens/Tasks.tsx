@@ -5,7 +5,7 @@ import { Drawer } from '../components/Drawer';
 import { relativeDue, today } from '../lib/dates';
 import { readSettings, writeSettings } from '../data/settings';
 import { blankCalendarSync } from '../data/factories';
-import { completeTask, skipTask } from '../data/taskCompletion';
+import { useTaskActions } from '../data/taskActions';
 import type { Task, TaskType } from '../types/domain';
 import { TASK_TYPE_LABELS } from '../types/domain';
 
@@ -13,9 +13,11 @@ const TASK_TYPES = Object.keys(TASK_TYPE_LABELS) as TaskType[];
 
 export function Tasks() {
   const ctx = useData();
+  // The confirmation, the Undo and the "Saving…" state all live here, so
+  // Today and Tasks cannot drift into saying different things.
+  const actions = useTaskActions();
   const { data, insert, remove } = ctx;
   const [creating, setCreating] = useState(false);
-  const [lastLogged, setLastLogged] = useState<string | null>(null);
   const [showDone, setShowDone] = useState(() => readSettings().showCompletedTasks);
 
   const now = today();
@@ -60,21 +62,16 @@ export function Tasks() {
                   <button
                     className="btn btn-quiet"
                     title="Marks it done and logs it on the Activity screen."
-                    onClick={async () => {
-                      const result = await completeTask(ctx, data, task);
-                      setLastLogged(
-                        result.activityCreated
-                          ? `Logged "${task.title}" on the Activity screen.`
-                          : `"${task.title}" was already logged, so nothing was added twice.`,
-                      );
-                    }}
+                    disabled={actions.busyId !== null}
+                    onClick={() => void actions.done(task)}
                   >
-                    Done
+                    {actions.busyId === task.id ? 'Saving…' : 'Done'}
                   </button>
                   <button
                     className="btn btn-quiet"
                     title="Nothing happened, so nothing gets logged."
-                    onClick={() => skipTask(ctx, task)}
+                    disabled={actions.busyId !== null}
+                    onClick={() => void actions.skip(task)}
                   >
                     Skip
                   </button>
@@ -107,7 +104,6 @@ export function Tasks() {
         }
       />
 
-      {lastLogged ? <p className="notice notice-violet">{lastLogged}</p> : null}
 
       {data.tasks.length === 0 ? (
         <Empty title="Nothing to do">

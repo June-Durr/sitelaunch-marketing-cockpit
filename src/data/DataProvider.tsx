@@ -152,6 +152,26 @@ export function DataProvider({ children }: { children: ReactNode }) {
             return outcome;
           }
         : null,
+      /**
+       * No refresh in here.
+       *
+       * The caller decides when to reload, because it also decides when the row
+       * it just acted on should leave the queue. Refreshing inside the write
+       * would pull the row out from under the pointer before the confirmation
+       * had been drawn.
+       */
+      completeTaskDurably: repo.completeTaskDurably
+        ? (input) => repo.completeTaskDurably!(input)
+        : null,
+      undoTaskOperation: repo.undoTaskOperation
+        ? (taskId) => repo.undoTaskOperation!(taskId)
+        : null,
+      skipTaskDurably: repo.skipTaskDurably ? (taskId) => repo.skipTaskDurably!(taskId) : null,
+      softDeleteTask: repo.softDeleteTask ? (taskId) => repo.softDeleteTask!(taskId) : null,
+      loadRecentlyDeleted: repo.loadRecentlyDeleted
+        ? () => repo.loadRecentlyDeleted!()
+        : null,
+      loadSyncPending: repo.loadSyncPending ? () => repo.loadSyncPending!() : null,
     }),
     [data, error, loading, refresh, repo],
   );

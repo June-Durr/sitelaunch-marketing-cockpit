@@ -27,7 +27,16 @@ const allSql = readdirSync(dir)
  * either pass by accident or force the store to be written dishonestly.
  */
 const sqlWithoutTokenStore = readdirSync(dir)
-  .filter((f) => f.endsWith('.sql') && !f.startsWith('0010_'))
+  .filter(
+    (f) =>
+      f.endsWith('.sql') &&
+      // 0010 holds the OAuth token store; 0012 and 0013 grant their own
+      // functions to service_role, which is the point of them. All three
+      // are excluded from this blanket word search and asserted on
+      // directly further down, because a text match over them would
+      // either pass by accident or force them to be written dishonestly.
+      !f.startsWith('0010_') && !f.startsWith('0012_') && !f.startsWith('0013_'),
+  )
   .map((f) => sqlFor(f))
   .join('\n');
 

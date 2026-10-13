@@ -2,6 +2,7 @@ import { createContext, useContext } from 'react';
 import type { Dataset } from '../types/domain';
 import type {
   AnalyticsProvider, AnalyticsStatus, CalendarDisconnectOutcome, CalendarOAuthStart,
+  CompletionInput, CompletionOutcome, UndoOutcome,
   CalendarStatus, CalendarSyncOutcome, ImportReport, LeadMirrorAction,
   LeadMirrorOutcome, LeadMirrorStatus, NewRow, ReconcileMode, RowPatch, SyncMode,
   SyncTriggerOutcome, TableMap, TableName,
@@ -54,6 +55,20 @@ export interface DataContextValue {
   startCalendarOAuth: (() => Promise<CalendarOAuthStart>) | null;
   /** Null in browser-local mode. Forgets the authorization server side. */
   disconnectCalendar: (() => Promise<CalendarDisconnectOutcome>) | null;
+  /**
+   * Null in browser-local mode, which has no transaction to offer.
+   *
+   * When present, one call writes the activity, moves the lead, moves the task
+   * and queues the syncs, or writes none of it. See src/data/taskActions.tsx for
+   * what the screens do when it is absent.
+   */
+  completeTaskDurably: ((input: CompletionInput) => Promise<CompletionOutcome>) | null;
+  /** Null in browser-local mode, where nothing recorded the previous state. */
+  undoTaskOperation: ((taskId: string) => Promise<UndoOutcome>) | null;
+  skipTaskDurably: ((taskId: string) => Promise<UndoOutcome>) | null;
+  softDeleteTask: ((taskId: string) => Promise<UndoOutcome>) | null;
+  loadRecentlyDeleted: (() => Promise<TableMap['tasks'][]>) | null;
+  loadSyncPending: (() => Promise<{ calendar: boolean; leadMirror: boolean }>) | null;
 }
 
 export const DataContext = createContext<DataContextValue>({
@@ -85,6 +100,12 @@ export const DataContext = createContext<DataContextValue>({
   triggerCalendarSync: null,
   startCalendarOAuth: null,
   disconnectCalendar: null,
+  completeTaskDurably: null,
+  undoTaskOperation: null,
+  skipTaskDurably: null,
+  softDeleteTask: null,
+  loadRecentlyDeleted: null,
+  loadSyncPending: null,
 });
 
 export function useData(): DataContextValue {

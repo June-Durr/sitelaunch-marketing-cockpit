@@ -10,7 +10,7 @@ const CadenceChart = lazy(() =>
 );
 import { pickNextStep } from '../engine/recommendations';
 import { findMeasurementGaps } from '../engine/measurement';
-import { completeTask } from '../data/taskCompletion';
+import { useTaskActions } from '../data/taskActions';
 import { recentMeaningfulActivity } from '../lib/activity';
 import { ACTIVITY_TYPE_LABELS } from '../types/domain';
 import {
@@ -30,6 +30,7 @@ import { TASK_TYPE_LABELS, WINDOW_LABELS } from '../types/domain';
 
 export function Today() {
   const ctx = useData();
+  const actions = useTaskActions();
   const { data } = ctx;
   const now = today();
   // The program is fixed, so these numbers cannot drift just because a day passed.
@@ -204,9 +205,10 @@ export function Today() {
                   <button
                     className="btn btn-quiet"
                     title="Marks it done and logs it on the Activity screen."
-                    onClick={() => completeTask(ctx, data, task)}
+                    disabled={actions.busyId !== null}
+                    onClick={() => void actions.done(task)}
                   >
-                    Done
+                    {actions.busyId === task.id ? 'Saving…' : 'Done'}
                   </button>
                 </div>
               </li>

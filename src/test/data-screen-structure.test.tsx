@@ -113,6 +113,12 @@ function context(over: Partial<DataContextValue> = {}): DataContextValue {
       ok: true, status: 'succeeded', created: 0, updated: 19, failed: 0, tasks: 19,
       stoppedEarly: null, error: null,
     }),
+    completeTaskDurably: null,
+    undoTaskOperation: null,
+    skipTaskDurably: null,
+    softDeleteTask: null,
+    loadRecentlyDeleted: null,
+    loadSyncPending: null,
     startCalendarOAuth: async () => ({ status: 'ready', authorizeUrl: null, error: null }),
     disconnectCalendar: async () => ({
       ok: true, status: 'disconnected', revokedAtGoogle: true, eventsRemoved: false,

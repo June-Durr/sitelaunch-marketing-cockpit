@@ -1,5 +1,7 @@
 import { NavLink, Outlet } from 'react-router-dom';
 import { useData } from '../data/context';
+import { TaskActionsProvider, useTaskActions } from '../data/taskActions';
+import { CompletionToast } from './CompletionToast';
 import { useAuth } from '../auth/context';
 import { today } from '../lib/dates';
 import {
@@ -7,9 +9,55 @@ import {
   TasksIcon, TodayIcon, WebsiteIcon, type IconComponent,
 } from './icons';
 
+/**
+ * The eight destinations, each with a mark.
+ *
+ * The labels stay. An icon-only rail would make somebody learn eight glyphs to
+ * use a tool they open twice a day, and the counts beside them would have
+ * nothing to attach to. The icon is a second way to find a row you already
+ * know, not a replacement for reading it.
+ */
+function LINKS(
+  dueTasks: number,
+  dueLeads: number,
+  liveRecs: number,
+  data: ReturnType<typeof useData>['data'],
+): { to: string; label: string; Icon: IconComponent; count?: number }[] {
+  return [
+    { to: '/', label: 'Today', count: dueTasks + dueLeads || undefined, Icon: TodayIcon },
+    { to: '/content', label: 'Content Log', count: data.contentItems.length || undefined, Icon: ContentIcon },
+    // No count on Website Outcomes. The manual traffic_snapshots total used to
+    // sit here, which read as the whole of the website story when in fact the
+    // synced GA4 and Search Console rows live in their own tables. Showing the
+    // honest number would mean a second analytics read in the shell, on every
+    // screen, so the badge is gone instead of wrong.
+    { to: '/website', label: 'Website Outcomes', Icon: WebsiteIcon },
+    { to: '/pipeline', label: 'Pipeline', count: dueLeads || undefined, Icon: PipelineIcon },
+    { to: '/tasks', label: 'Tasks', count: dueTasks || undefined, Icon: TasksIcon },
+    { to: '/activity', label: 'Activity', count: data.activityEvents.length || undefined, Icon: ActivityIcon },
+    { to: '/recommendations', label: 'Recommendations', count: liveRecs || undefined, Icon: RecommendationsIcon },
+    { to: '/data', label: 'Data & Import', Icon: DataIcon },
+  ];
+}
+
 export function AppShell() {
+  return (
+    <TaskActionsProvider>
+      <Shell />
+    </TaskActionsProvider>
+  );
+}
+
+/**
+ * The frame itself, inside the provider so it can render the confirmation.
+ *
+ * Split out rather than nested inline because a provider cannot consume its own
+ * context: useTaskActions has to be called by a component below it.
+ */
+function Shell() {
   const { data, mode, loading, error } = useData();
   const { phase, user, signOut } = useAuth();
+  const { toast, dismissToast } = useTaskActions();
 
   const now = today();
   const dueTasks = data.tasks.filter((t) => t.status === 'open' && t.due_date <= now).length;
@@ -18,29 +66,9 @@ export function AppShell() {
   ).length;
   const liveRecs = data.recommendations.filter((r) => !r.dismissed_at).length;
 
-  /**
-   * The eight destinations, each with a mark.
-   *
-   * The labels stay. An icon-only rail would make somebody learn eight glyphs
-   * to use a tool they open twice a day, and the counts beside them would have
-   * nothing to attach to. The icon is a second way to find a row you already
-   * know, not a replacement for reading it.
-   */
-  const links: { to: string; label: string; Icon: IconComponent; count?: number }[] = [
-    { to: '/', label: 'Today', count: dueTasks + dueLeads || undefined , Icon: TodayIcon},
-    { to: '/content', label: 'Content Log', count: data.contentItems.length || undefined , Icon: ContentIcon},
-    // No count on Website Outcomes. The manual traffic_snapshots total used to sit
-    // here, which read as the whole of the website story when in fact the synced GA4
-    // and Search Console rows live in their own tables. Showing the honest number
-    // would mean a second analytics read in the shell, on every screen, so the badge
-    // is gone instead of wrong.
-    { to: '/website', label: 'Website Outcomes' , Icon: WebsiteIcon},
-    { to: '/pipeline', label: 'Pipeline', count: dueLeads || undefined , Icon: PipelineIcon},
-    { to: '/tasks', label: 'Tasks', count: dueTasks || undefined , Icon: TasksIcon},
-    { to: '/activity', label: 'Activity', count: data.activityEvents.length || undefined , Icon: ActivityIcon},
-    { to: '/recommendations', label: 'Recommendations', count: liveRecs || undefined , Icon: RecommendationsIcon},
-    { to: '/data', label: 'Data & Import' , Icon: DataIcon},
-  ];
+  const links: { to: string; label: string; Icon: IconComponent; count?: number }[] = LINKS(
+    dueTasks, dueLeads, liveRecs, data,
+  );
 
   return (
     <div className="shell">
@@ -117,6 +145,10 @@ export function AppShell() {
           )}
         </div>
       </main>
+
+      {/* Outside <main>, so it is not inside the scrolling column and stays
+          put while the page moves under it. */}
+      <CompletionToast toast={toast} onDismiss={dismissToast} />
     </div>
   );
 }

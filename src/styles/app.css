@@ -1193,3 +1193,127 @@ table.data td.num { white-space: nowrap; }
 .data-anchor { scroll-margin-top: 4.5rem; }
 .data-anchor:focus { outline: none; }
 .data-anchor:focus-visible { outline: 2px solid var(--violet); outline-offset: 6px; }
+
+/* =========================================================================
+   The completion confirmation.
+
+   Fixed to the viewport rather than placed in the list, because the row it
+   describes has usually left the queue by the time it is read. Bottom centre
+   on a phone, bottom left on a desktop where the eye is already on the left
+   rail after clicking.
+   ========================================================================= */
+
+.toast-region {
+  position: fixed;
+  left: 50%;
+  bottom: 1.25rem;
+  transform: translateX(-50%);
+  z-index: 60;
+  width: min(32rem, calc(100vw - 2rem));
+  /* Empty most of the time, and must not swallow clicks when it is. */
+  pointer-events: none;
+}
+.toast {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.7rem;
+  pointer-events: auto;
+  background: var(--charcoal);
+  color: #f6f2ec;
+  border-radius: 10px;
+  padding: 0.8rem 0.85rem 0.8rem 0.95rem;
+  box-shadow: 0 10px 30px rgba(31, 29, 26, 0.26);
+  animation: toast-in 180ms ease-out;
+}
+.toast-success { border-left: 3px solid #8fd0a5; }
+.toast-error   { border-left: 3px solid #e49a92; }
+.toast-neutral { border-left: 3px solid var(--rule-strong); }
+
+.toast-body { flex: 1 1 auto; min-width: 0; }
+.toast-message {
+  margin: 0;
+  font-size: 0.9375rem;
+  line-height: 1.4;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+.toast-detail {
+  margin: 0.2rem 0 0;
+  font-size: 0.8125rem;
+  line-height: 1.4;
+  color: rgba(246, 242, 236, 0.72);
+}
+
+.toast-undo {
+  flex: 0 0 auto;
+  background: none;
+  border: 1px solid rgba(246, 242, 236, 0.35);
+  border-radius: 6px;
+  color: #f6f2ec;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  padding: 0.3rem 0.65rem;
+  cursor: pointer;
+}
+.toast-undo:hover { border-color: #f6f2ec; }
+.toast-undo:focus-visible { outline: 2px solid #f6f2ec; outline-offset: 2px; }
+
+.toast-close {
+  flex: 0 0 auto;
+  background: none;
+  border: 0;
+  color: rgba(246, 242, 236, 0.6);
+  cursor: pointer;
+  padding: 0.2rem;
+  line-height: 0;
+}
+.toast-close:hover { color: #f6f2ec; }
+.toast-close:focus-visible { outline: 2px solid #f6f2ec; outline-offset: 2px; }
+
+/* The celebration: a ring and a tick that draw themselves in, once, in well
+   under a second. Decorative, and the first thing to go when somebody has
+   asked for less movement. */
+.toast-tick { flex: 0 0 auto; color: #8fd0a5; margin-top: 0.1rem; }
+.toast-tick-mark {
+  stroke-dasharray: 18;
+  stroke-dashoffset: 18;
+  animation: tick-draw 420ms ease-out 80ms forwards;
+}
+.toast-tick-ring {
+  transform-origin: 50% 50%;
+  animation: tick-ring 520ms ease-out forwards;
+}
+/* Already drawn, nothing moving. */
+.toast-tick.is-still .toast-tick-mark,
+.toast-tick.is-still .toast-tick-ring {
+  animation: none;
+  stroke-dashoffset: 0;
+  opacity: 1;
+  transform: none;
+}
+
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes tick-draw { to { stroke-dashoffset: 0; } }
+@keyframes tick-ring {
+  from { transform: scale(0.72); opacity: 0.1; }
+  to   { transform: scale(1); opacity: 0.35; }
+}
+
+/* A row that has just been finished, before the queue lets it go. */
+.row-just-done { background: rgba(143, 208, 165, 0.14); transition: background 220ms ease; }
+.row-error { color: var(--crimson); font-size: 0.8125rem; margin-top: 0.25rem; }
+
+@media (prefers-reduced-motion: reduce) {
+  .toast { animation: none; }
+  .toast-tick-mark, .toast-tick-ring { animation: none; stroke-dashoffset: 0; }
+  .row-just-done { transition: none; }
+}
+
+@media (max-width: 640px) {
+  .toast-region { bottom: 0.75rem; width: calc(100vw - 1.5rem); }
+  .toast { padding: 0.7rem 0.75rem; }
+  .toast-message { font-size: 0.875rem; }
+}

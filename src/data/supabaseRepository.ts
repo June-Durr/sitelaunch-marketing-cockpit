@@ -7,6 +7,7 @@
 import type { Dataset } from '../types/domain';
 import type {
   AnalyticsProvider, AnalyticsStatus, CalendarDisconnectOutcome, CalendarOAuthStart,
+  CompletionInput, CompletionOutcome, UndoOutcome, UndoStatus,
   CalendarStatus, CalendarSyncOutcome,
   ImportReport, LeadMirrorAction, LeadMirrorOutcome, LeadMirrorStatus, NewRow,
   ReconcileMode, Repository, RowPatch, SyncMode, SyncTriggerOutcome, TableMap,
@@ -374,6 +375,93 @@ export function createSupabaseRepository(): Repository {
     },
 
     /**
+     * Finish a task in one write, however many times the button is pressed.
+     *
+     * Everything the completion changes happens inside complete_task_operation,
+     * in one transaction. The browser used to do this in four statements, and
+     * each one could succeed while the next failed; the failure that produces is
+     * not an error message, it is a lead whose follow-up date moved with no
+     * activity to explain why.
+     *
+     * The cadence rule is still decided by the caller and passed in.
+     * Duplicating it in SQL would mean two implementations to keep in agreement.
+     */
+    async completeTaskDurably(input: CompletionInput): Promise<CompletionOutcome> {
+      const empty = (error: string): CompletionOutcome => ({
+        ok: false, activityId: null, reused: false, taskReopened: false,
+        nextDueDate: null, occurredAt: null, error,
+      });
+
+      const { data, error } = await db.rpc('complete_task_operation', {
+        p_task_id: input.taskId,
+        p_token: input.token,
+        p_occurred_at: input.occurredAt,
+        p_channel: input.channel ?? null,
+        p_approved_message: input.approvedMessage ?? null,
+        p_outcome: input.outcome ?? null,
+        p_activity_type: 'follow_up_sent',
+        p_title: null,
+        p_next_due_date: input.nextDueDate ?? null,
+        p_next_title: input.nextTitle ?? null,
+        p_next_notes: input.nextNotes ?? null,
+        p_reopen_task: input.reopenTask,
+        p_calendar_history: true,
+      });
+
+      if (error) return empty(error.message);
+
+      const body = (data ?? {}) as Record<string, unknown>;
+      return {
+        ok: true,
+        activityId: typeof body.activity_id === 'string' ? body.activity_id : null,
+        reused: body.reused === true,
+        taskReopened: body.task_reopened === true,
+        // The date that was really written, so a confirmation quotes the record
+        // rather than what the caller hoped for.
+        nextDueDate: typeof body.next_due_date === 'string' ? body.next_due_date : null,
+        occurredAt: typeof body.occurred_at === 'string' ? body.occurred_at : input.occurredAt,
+        error: null,
+      };
+    },
+
+    /** Reverse the last operation on a task, or say why it will not. */
+    async undoTaskOperation(taskId: string): Promise<UndoOutcome> {
+      return callUndo(db, 'undo_task_operation', taskId);
+    },
+
+    async skipTaskDurably(taskId: string): Promise<UndoOutcome> {
+      return callUndo(db, 'skip_task_operation', taskId);
+    },
+
+    async softDeleteTask(taskId: string): Promise<UndoOutcome> {
+      return callUndo(db, 'soft_delete_task', taskId);
+    },
+
+    /** What is in the bin. Read through a function, because the policy hides them. */
+    async loadRecentlyDeleted(): Promise<TableMap['tasks'][]> {
+      const { data, error } = await db.rpc('recently_deleted_tasks');
+      if (error) return [];
+      return (data ?? []) as TableMap['tasks'][];
+    },
+
+    /**
+     * Is a sync still outstanding for this owner?
+     *
+     * Read from the queue rather than guessed, so "Saved; calendar syncing" and
+     * "Calendar synced" are two different statements of fact rather than one
+     * hopeful message.
+     */
+    async loadSyncPending(): Promise<{ calendar: boolean; leadMirror: boolean }> {
+      const { data, error } = await db
+        .from('sync_jobs')
+        .select('kind')
+        .is('completed_at', null);
+      if (error) return { calendar: false, leadMirror: false };
+      const kinds = new Set(((data ?? []) as { kind: string }[]).map((r) => r.kind));
+      return { calendar: kinds.has('calendar'), leadMirror: kinds.has('lead_mirror') };
+    },
+
+    /**
      * Begin connecting this person's own Google account.
      *
      * The browser gets back a URL to Google and nothing else. It does not build
@@ -718,4 +806,30 @@ export function createSupabaseRepository(): Repository {
       ? { ok: true, message: null }
       : { ok: false, message: problems.join('; ') };
   }
+}
+
+/**
+ * One shape for the three functions that return an undo-style answer.
+ *
+ * They all report a status rather than throwing, because "there was nothing to
+ * undo" and "somebody edited this since" are answers a screen shows a person,
+ * not errors a caller should have to catch.
+ */
+async function callUndo(
+  client: ReturnType<typeof getSupabase>,
+  fn: string,
+  taskId: string,
+): Promise<UndoOutcome> {
+  const { data, error } = await client.rpc(fn, { p_task_id: taskId });
+  if (error) {
+    return { status: 'failed', operation: null, reasons: [], error: error.message };
+  }
+  const body = (data ?? {}) as Record<string, unknown>;
+  const status = typeof body.status === 'string' ? body.status : 'failed';
+  return {
+    status: status as UndoStatus,
+    operation: typeof body.operation === 'string' ? body.operation : null,
+    reasons: Array.isArray(body.reasons) ? (body.reasons as string[]) : [],
+    error: null,
+  };
 }

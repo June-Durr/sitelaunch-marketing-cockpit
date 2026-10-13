@@ -112,6 +112,12 @@ function supabaseContext(options: {
       return options.status ?? notConnected;
     },
     triggerCalendarSync: options.sync ?? (async () => syncOutcome()),
+    completeTaskDurably: null,
+    undoTaskOperation: null,
+    skipTaskDurably: null,
+    softDeleteTask: null,
+    loadRecentlyDeleted: null,
+    loadSyncPending: null,
     startCalendarOAuth:
       options.start
       ?? (async (): Promise<CalendarOAuthStart> => ({

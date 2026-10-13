@@ -122,6 +122,12 @@ function supabaseContext(options: {
     triggerLeadMirror: options.trigger ?? (async () => outcome()),
     loadCalendar: options.calendar ? async () => options.calendar as CalendarStatus : null,
     triggerCalendarSync: options.calendarSync ?? null,
+    completeTaskDurably: null,
+    undoTaskOperation: null,
+    skipTaskDurably: null,
+    softDeleteTask: null,
+    loadRecentlyDeleted: null,
+    loadSyncPending: null,
     startCalendarOAuth: null,
     disconnectCalendar: null,
   };
