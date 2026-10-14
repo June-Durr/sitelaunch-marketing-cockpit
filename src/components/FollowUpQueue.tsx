@@ -1,5 +1,6 @@
 import { Link } from 'react-router-dom';
 import { Tag, Unknown } from './primitives';
+import { leadLabel, leadShortLabel } from '../lib/leadLabel';
 import { formatDay, relativeDue } from '../lib/dates';
 import {
   FOLLOW_UP_STATUS_EXPLANATIONS, FOLLOW_UP_STATUS_LABELS, FOLLOW_UP_STATUS_TONES,
@@ -73,7 +74,11 @@ function FollowUpQueueRow({
   return (
     <li>
       <div className="queue-main">
-        <div className="queue-title">{lead.prospect_name}</div>
+        {/* The organisation stands in when nobody knows the name yet.
+            "Name pending" is not a name and tells a reader nothing. The
+            organisation itself is on the line below, so the title does not
+            repeat it. */}
+        <div className="queue-title">{leadShortLabel(lead)}</div>
 
         <div className="queue-meta">
           {lead.organization ?? 'No organization recorded'}
@@ -128,8 +133,10 @@ function FollowUpQueueRow({
         <Link
           className="btn btn-quiet"
           to={`/pipeline?lead=${lead.id}`}
-          aria-label={`Open ${lead.prospect_name}`}
-          title={`Open ${lead.prospect_name}`}
+          // Name and organisation together here, where a screen reader
+          // user gets the context the sighted layout gives visually.
+          aria-label={`Open ${leadLabel(lead)}`}
+          title={`Open ${leadShortLabel(lead)}`}
         >
           Open
         </Link>

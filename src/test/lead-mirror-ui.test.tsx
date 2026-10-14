@@ -907,11 +907,23 @@ describe('the Pipeline action queue', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Action queue' }));
 
     await waitFor(() => expect(screen.getByText(/Not being chased/)).toBeTruthy());
-    // Collapsed, so the person set to no follow-up is not on screen yet.
+    /*
+     * Collapsed, so the person set to no follow-up is not on screen yet.
+     *
+     * Found by its organisation rather than by "Name pending". That string is a
+     * note that the name is missing, not a name, and the queue no longer prints
+     * it: where the person is unknown and the organisation is not, the
+     * organisation is the label. See src/lib/leadLabel.ts.
+     */
+    expect(screen.queryByText('Olde Capital Investments')).toBeNull();
     expect(screen.queryByText('Name pending')).toBeNull();
 
     fireEvent.click(screen.getByRole('button', { name: 'Show them' }));
-    await waitFor(() => expect(screen.getByText('Name pending')).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByText('Olde Capital Investments')).toBeTruthy(),
+    );
+    // And the placeholder never appears, open or closed.
+    expect(screen.queryByText('Name pending')).toBeNull();
   });
 
   it('says honestly where a last touch came from', async () => {
