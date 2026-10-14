@@ -67,11 +67,12 @@ describe('a fresh database takes every migration in order', () => {
     ).map((r) => r.table_name);
 
     expect(tables).toEqual([
-      'accounts', 'activity_events', 'calendar_oauth_states',
-      'calendar_oauth_tokens', 'content_items', 'ga4_daily_traffic',
-      'integration_connections', 'leads', 'performance_snapshots',
-      'recommendations', 'search_console_daily', 'sync_jobs', 'sync_runs',
-      'tasks', 'traffic_snapshots',
+      'accounts', 'activity_events', 'ai_usage', 'calendar_oauth_states',
+      'calendar_oauth_tokens', 'content_items', 'extracted_facts',
+      'ga4_daily_traffic',
+      'integration_connections', 'leads', 'message_drafts',
+      'performance_snapshots', 'recommendations', 'search_console_daily',
+      'sync_jobs', 'sync_runs', 'tasks', 'traffic_snapshots',
     ]);
   });
 

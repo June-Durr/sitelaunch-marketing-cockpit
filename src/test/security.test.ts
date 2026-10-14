@@ -39,7 +39,8 @@ const sqlWithoutTokenStore = readdirSync(dir)
       !f.startsWith('0012_') &&
       !f.startsWith('0013_') &&
       !f.startsWith('0014_') &&
-      !f.startsWith('0015_'),
+      !f.startsWith('0015_') &&
+      !f.startsWith('0016_'),
   )
   .map((f) => sqlFor(f))
   .join('\n');
