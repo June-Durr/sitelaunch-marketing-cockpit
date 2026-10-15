@@ -41,7 +41,9 @@ const sqlWithoutTokenStore = readdirSync(dir)
       !f.startsWith('0014_') &&
       !f.startsWith('0015_') &&
       !f.startsWith('0016_') &&
-      !f.startsWith('0017_'),
+      !f.startsWith('0017_') &&
+      !f.startsWith('0018_') &&
+      !f.startsWith('0019_'),
   )
   .map((f) => sqlFor(f))
   .join('\n');
@@ -501,6 +503,105 @@ describe('the model key stays on the server', () => {
 });
 
 /* ------------------------------------------------------------------------ */
+
+/**
+ * The spending ceiling, asserted on the SQL.
+ *
+ * 0019 is excluded from the blanket word search above because granting its two
+ * functions to service_role is the point of them. These are the direct
+ * assertions that earn that exclusion, and one of them cannot be made any other
+ * way: the advisory lock is what makes two simultaneous requests safe, and a
+ * single database connection cannot observe its effect, so the test reads the
+ * SQL for it.
+ */
+describe('the spending ceiling cannot be reached around', () => {
+  const sql = sqlFor('0019_spend_guard.sql');
+
+  it('serialises every decision for one owner', () => {
+    // Without this, two requests read the same total, both pass the check, and
+    // both spend. That is exactly the case a ceiling exists for.
+    expect(sql).toContain('pg_advisory_xact_lock');
+    expect(sql).toContain("hashtext('ai_spend:' || p_owner::text)");
+  });
+
+  it('counts money that is in flight, not only money already spent', () => {
+    expect(sql).toContain("case when state = 'reserved' then reserved_micros");
+  });
+
+  it('counts a settled request with an unknown cost at its worst case', () => {
+    // coalesce(cost, reserved, 0): the middle term is what stops an unknown
+    // cost walking through the ceiling.
+    expect(sql).toContain('coalesce(cost_micros, reserved_micros, 0)');
+  });
+
+  it('refuses rather than books when the reservation would cross the limit', () => {
+    const body = sql.slice(sql.indexOf('create or replace function reserve_ai_spend'));
+    const refusal = body.indexOf("'over_cap'");
+    const insert = body.indexOf('insert into ai_usage');
+    expect(refusal).toBeGreaterThan(-1);
+    // The refusal returns before anything is written.
+    expect(refusal).toBeLessThan(insert);
+  });
+
+  it('makes a repeated press impossible to charge twice', () => {
+    expect(sql).toContain('create unique index if not exists ai_usage_one_per_request');
+    expect(sql).toContain('on ai_usage (owner_id, request_token)');
+  });
+
+  it('keeps the whole of it away from anything a browser can be', () => {
+    for (const fn of ['reserve_ai_spend', 'settle_ai_spend', 'ai_spend_recent']) {
+      const revokes = sql
+        .split(';')
+        .filter((statement) => statement.includes(fn) && statement.includes('revoke'));
+      expect(revokes.join(' '), `${fn} is not revoked from anon`).toContain('anon');
+    }
+    expect(sql).toContain('grant execute on function reserve_ai_spend');
+    expect(sql).toContain('to service_role');
+    // And the two that write are never granted to a signed in browser.
+    for (const grant of sql.split(';').filter((x) => x.includes('grant execute on function'))) {
+      if (grant.includes('reserve_ai_spend') || grant.includes('settle_ai_spend')) {
+        expect(grant).not.toContain('authenticated');
+      }
+    }
+  });
+
+  it('never names a credential', () => {
+    for (const word of ['api_key', 'openai', 'secret', 'token_value']) {
+      expect(sql.toLowerCase(), `0019 mentions ${word}`).not.toContain(word);
+    }
+  });
+});
+
+/**
+ * And the one thing the ceiling is for: a blocked request that does not spend.
+ *
+ * The proof is in server/integrations/assistantRun.test.ts, which passes a spy
+ * in place of the model call and asserts it was never invoked. This asserts the
+ * shape that makes that possible, so the seam cannot be quietly removed: the
+ * function hands the model call to the orchestrator rather than making it.
+ */
+describe('the function cannot spend without passing the gate', () => {
+  const handler = readFileSync('supabase/functions/assistant/index.ts', 'utf8');
+
+  it('calls the model only through the orchestrator', () => {
+    expect(handler).toContain('runAssistantTurn');
+    // askModel appears once, as the callback handed to the orchestrator.
+    const calls = handler.match(/askModel\(/g) ?? [];
+    expect(calls).toHaveLength(1);
+    expect(handler).toContain('ask: () => askModel({');
+  });
+
+  it('books a reservation measured from the prompt it is about to send', () => {
+    expect(handler).toContain('reserveMicros({');
+    expect(handler).toContain('promptCharacters');
+    expect(handler).toContain('maxOutputTokens: MAX_OUTPUT_TOKENS');
+  });
+
+  it('reads its limits from configuration rather than hard coding them', () => {
+    expect(handler).toContain('readLimits(env)');
+  });
+});
+
 
 describe('every composite SET NULL names only the nullable column', () => {
   /**

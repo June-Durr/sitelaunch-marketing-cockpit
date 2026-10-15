@@ -39,9 +39,13 @@ import { createClient } from 'jsr:@supabase/supabase-js@2';
 import { sanitizeError, safeLog } from '../../../server/integrations/sanitize.ts';
 import { requireUser } from '../../../server/integrations/requestAuth.ts';
 import {
-  askModel, chooseModel, isOutOfCredit, ModelError, priceUsage,
-  type AssistantOperation, type CostBasis, type ModelUsage,
+  askModel, chooseModel, type AssistantOperation,
 } from '../../../server/integrations/openai.ts';
+import {
+  runAssistantTurn, type ReserveRequest, type ReserveOutcome, type SettleRequest,
+  type SpendGate,
+} from '../../../server/integrations/assistantRun.ts';
+import { readLimits, reserveMicros } from '../../../server/integrations/spendGuard.ts';
 import {
   buildInput, buildInstructions, REPLY_SCHEMA, type AssistantContext, type DraftBrief,
   type HistoryBrief, type LeadBrief,
@@ -246,47 +250,97 @@ function readTurns(raw: unknown): { role: 'user' | 'assistant'; content: string 
 
 const OPERATIONS: AssistantOperation[] = ['capture', 'brief', 'draft'];
 
+/**
+ * The output ceiling for one turn.
+ *
+ * Named because two things depend on it agreeing: the request that caps the
+ * model, and the reservation that books what that cap could cost.
+ */
+const MAX_OUTPUT_TOKENS = 1800;
+
 /* ------------------------------------------------------------- the handler --- */
 
 /**
- * The usage row. Written for failures too, because a failed call is still billed.
+ * The ceiling, as the function sees it.
  *
- * Nulls where something is not known, never zeros. A request that failed on the
- * way back was charged and reported nothing, and a zero in this table would be
- * a claim that it was free. Migration 0018 makes the three numbers nullable for
- * exactly this, and requires a reason beside any unknown cost.
+ * Two database calls, both with the service role, because spend accounting is
+ * the server's business alone: ai_usage gives a browser read and nothing else,
+ * and migration 0019 grants these two functions to service_role only.
+ *
+ * A reservation that cannot be made is reported as 'unavailable' rather than
+ * thrown, because the orchestrator treats that as a refusal. A request that
+ * cannot be counted must not be allowed to spend.
  */
-async function recordUsage(
-  client: ReturnType<typeof createClient> | null,
-  ownerId: string,
-  operation: string,
-  model: string,
-  usage: ModelUsage | null,
-  costMicros: number | null,
-  basis: CostBasis,
-  error: string | null,
-): Promise<void> {
-  if (!client) return;
-  const note = basis === 'no_price'
-    ? `no price on file for ${model}, so this request is counted but not costed`
-    : basis === 'no_usage' && error === null
-      ? 'the provider reported no usage figures for this request'
-      : null;
-  try {
-    await client.from('ai_usage').insert({
-      owner_id: ownerId,
-      operation,
-      model,
-      input_tokens: usage ? usage.inputTokens : null,
-      output_tokens: usage ? usage.outputTokens : null,
-      cost_micros: costMicros,
-      note,
-      error,
-    });
-  } catch (problem) {
-    // A usage row that will not write must not take the answer down with it.
-    safeLog('assistant: could not record usage', sanitizeError(problem));
-  }
+function spendGate(client: ReturnType<typeof createClient>): SpendGate {
+  return {
+    async reserve(request: ReserveRequest): Promise<ReserveOutcome> {
+      const { data, error } = await client.rpc('reserve_ai_spend', {
+        p_owner: request.ownerId,
+        p_operation: request.operation,
+        p_model: request.model,
+        p_reserve_micros: request.reserveMicros,
+        p_limit_micros: request.limitMicros,
+        p_max_per_minute: request.maxPerMinute,
+        p_request_token: request.requestToken,
+        p_hold_seconds: request.holdSeconds,
+      });
+
+      if (error) {
+        safeLog('assistant: could not reserve spend', sanitizeError(error));
+        return { status: 'unavailable', error: sanitizeError(error) };
+      }
+
+      const body = (data ?? {}) as Record<string, unknown>;
+      const number = (value: unknown): number =>
+        typeof value === 'number' ? value : Number(value ?? 0);
+
+      switch (body.status) {
+        case 'ok':
+          return {
+            status: 'ok',
+            usageId: String(body.usage_id),
+            spentMicros: number(body.spent),
+            limitMicros: number(body.limit),
+          };
+        case 'over_cap':
+          return {
+            status: 'over_cap',
+            spentMicros: number(body.spent),
+            limitMicros: number(body.limit),
+          };
+        case 'rate_limited':
+          return {
+            status: 'rate_limited',
+            recent: number(body.recent),
+            allowed: number(body.allowed),
+          };
+        case 'duplicate':
+          return { status: 'duplicate' };
+        default:
+          return { status: 'unavailable', error: 'the spending check gave no answer' };
+      }
+    },
+
+    async settle(usageId: string, settlement: SettleRequest): Promise<void> {
+      const { error } = await client.rpc('settle_ai_spend', {
+        p_usage_id: usageId,
+        p_input: settlement.inputTokens,
+        p_output: settlement.outputTokens,
+        p_cost: settlement.costMicros,
+        p_error: settlement.error,
+        p_note: settlement.note,
+      });
+      if (error) {
+        /*
+         * A reservation that will not settle is not fatal to the answer, and it
+         * is not free either: it holds its worst case until it expires, and the
+         * sweep in reserve_ai_spend then keeps that figure. Erring towards
+         * holding budget is the right direction for a ceiling.
+         */
+        safeLog('assistant: could not settle usage', sanitizeError(error));
+      }
+    },
+  };
 }
 
 Deno.serve(async (request: Request): Promise<Response> => {
@@ -357,60 +411,58 @@ Deno.serve(async (request: Request): Promise<Response> => {
   }
 
   const model = chooseModel(operation, env);
+  const limits = readLimits(env);
+  const instructions = buildInstructions(context);
+  const input = buildInput(context, conversation);
 
-  try {
-    const result = await askModel({
-      apiKey: configured.key,
+  /*
+   * What this request books before it is allowed to happen.
+   *
+   * Measured from the prompt that is about to be sent, not guessed: every
+   * character of instructions, context and conversation, plus the output
+   * ceiling at full price. See server/integrations/spendGuard.ts.
+   */
+  const promptCharacters = instructions.length
+    + input.reduce((total, turn) => total + turn.content.length, 0);
+
+  const outcome = await runAssistantTurn(
+    {
+      gate: spendGate(service),
+      ask: () => askModel({
+        apiKey: configured.key,
+        model,
+        instructions,
+        input,
+        jsonSchema: { name: 'cockpit_assistant_reply', schema: REPLY_SCHEMA },
+        maxOutputTokens: MAX_OUTPUT_TOKENS,
+        timeoutSeconds: 45,
+      }),
+    },
+    {
+      ownerId,
+      operation,
       model,
-      instructions: buildInstructions(context),
-      input: buildInput(context, conversation),
-      jsonSchema: { name: 'cockpit_assistant_reply', schema: REPLY_SCHEMA },
-      maxOutputTokens: 1800,
-      timeoutSeconds: 45,
-    });
+      requestToken: str(body.requestToken, 120),
+      reserveMicros: reserveMicros({
+        model, promptCharacters, maxOutputTokens: MAX_OUTPUT_TOKENS,
+      }),
+      limitMicros: limits.dailyMicros,
+      maxPerMinute: limits.maxPerMinute,
+      holdSeconds: limits.holdSeconds,
+    },
+  );
 
-    await recordUsage(
-      service, ownerId, operation, result.model, result.usage, result.costMicros,
-      result.basis, null,
-    );
-
-    if (result.refusal) {
-      return json({
-        status: 'refused',
-        model: result.model,
-        costMicros: result.costMicros,
-        priced: result.basis === 'priced',
-        proposal: unparsableProposal(result.refusal),
-      });
-    }
-
-    const proposal = readProposal(result.text, context, message) ?? unparsableProposal(result.text);
-
-    safeLog(
-      `assistant: ${operation} ${result.model} key=${configured.from}`,
-      `in=${result.usage?.inputTokens ?? 'unknown'} `
-      + `out=${result.usage?.outputTokens ?? 'unknown'} `
-      + `cost=${result.costMicros ?? 'unknown'} basis=${result.basis} `
-      + `intent=${proposal.intent}`,
-    );
-
+  if (outcome.kind === 'blocked') {
+    safeLog(`assistant: blocked, ${outcome.status}`, `owner=${ownerId.slice(0, 8)}`);
     return json({
-      status: 'ok',
-      model: result.model,
-      costMicros: result.costMicros,
-      priced: result.basis === 'priced',
-      proposal,
-    });
-  } catch (error) {
-    const summary = error instanceof ModelError ? error.message : sanitizeError(error);
-    // Null, not zeros, when the provider told us nothing. See recordUsage.
-    const usage = error instanceof ModelError ? error.usage : null;
-    const { costMicros, basis } = priceUsage(model, usage);
+      status: outcome.status,
+      model,
+      error: outcome.message,
+    }, outcome.status === 'duplicate' ? 409 : 429);
+  }
 
-    await recordUsage(service, ownerId, operation, model, usage, costMicros, basis, summary);
-    // The key's name, never its value, so a configuration problem is visible
-    // in the logs of a failed request as well as a successful one.
-    safeLog(`assistant: request failed, key=${configured.from}`, summary);
+  if (outcome.kind === 'failed') {
+    safeLog(`assistant: request failed, key=${configured.from}`, outcome.message);
 
     /*
      * An exhausted balance is configuration, like a missing key, and the panel
@@ -418,19 +470,10 @@ Deno.serve(async (request: Request): Promise<Response> => {
      * Repeating "that did not get through" for something no retry can fix is
      * the difference between a person adding credit and a person debugging.
      */
-    if (isOutOfCredit(error)) {
-      /*
-       * Name the account, because "add credit" is not actionable on its own.
-       *
-       * A project scoped key draws on one organisation's balance. Credit added
-       * to a different organisation, or to a different login, looks from in
-       * here exactly like credit nobody added, and the identifiers are the only
-       * way to tell those apart. They are identifiers, not credentials.
-       */
-      const account = error instanceof ModelError ? error.account : null;
-      const where = account?.organization
-        ? ` The key is charged to organisation ${account.organization}`
-          + `${account.project ? `, project ${account.project}` : ''}, `
+    if (outcome.status === 'no_credit') {
+      const where = outcome.account?.organization
+        ? ` The key is charged to organisation ${outcome.account.organization}`
+          + `${outcome.account.project ? `, project ${outcome.account.project}` : ''}, `
           + 'so the credit has to be on that balance.'
         : '';
       return json({
@@ -443,6 +486,40 @@ Deno.serve(async (request: Request): Promise<Response> => {
       }, 503);
     }
 
-    return json({ status: 'failed', model, error: summary }, 502);
+    return json({ status: 'failed', model, error: outcome.message }, 502);
   }
+
+  const { result } = outcome;
+  const priced = outcome.basis === 'priced';
+
+  if (result.refusal) {
+    return json({
+      status: 'refused',
+      model,
+      costMicros: outcome.costMicros,
+      priced,
+      proposal: unparsableProposal(result.refusal),
+    });
+  }
+
+  const proposal = readProposal(result.text, context, message)
+    ?? unparsableProposal(result.text);
+
+  safeLog(
+    `assistant: ${operation} ${model} key=${configured.from}`,
+    `in=${result.usage?.inputTokens ?? 'unknown'} `
+    + `out=${result.usage?.outputTokens ?? 'unknown'} `
+    + `cost=${outcome.costMicros ?? 'unknown'} basis=${outcome.basis} `
+    + `answered_as=${result.model} intent=${proposal.intent}`,
+  );
+
+  return json({
+    // The model that was asked for and priced, not the one the answer named.
+    // A provider describing itself does not decide what a request cost.
+    status: 'ok',
+    model,
+    costMicros: outcome.costMicros,
+    priced,
+    proposal,
+  });
 });

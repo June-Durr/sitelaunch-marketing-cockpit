@@ -644,6 +644,77 @@ describe('when it cannot work', () => {
     expect(screen.getByText('The model account is out of credits, so I cannot answer.')).toBeTruthy();
   });
 
+  it('says plainly when the spending limit stopped the request', async () => {
+    harness({
+      reply: {
+        status: 'daily_cap',
+        proposal: null,
+        model: 'gpt-6.1-sol',
+        costMicros: null,
+        priced: false,
+        error:
+          'The assistant has reached its spending limit of $1.00 in twenty four hours. '
+          + 'About $0.99 of that is used or committed. Nothing was sent to the model and '
+          + 'nothing was charged.',
+      },
+    });
+    await ask('anything at all');
+
+    await waitFor(() => expect(screen.getByText(/spending limit of \$1\.00/)).toBeTruthy());
+    expect(screen.getByText(/nothing was charged/)).toBeTruthy();
+    expect(screen.getByText('That would go over the spending limit, so I did not ask.')).toBeTruthy();
+  });
+
+  it('says plainly when the rate limit stopped the request', async () => {
+    harness({
+      reply: {
+        status: 'rate_limited',
+        proposal: null,
+        model: 'gpt-6.1-sol',
+        costMicros: null,
+        priced: false,
+        error:
+          'That is 11 requests in the last minute, and the limit is 10. Nothing was sent '
+          + 'to the model and nothing was charged.',
+      },
+    });
+    await ask('anything at all');
+
+    await waitFor(() => expect(screen.getByText(/11 requests in the last minute/)).toBeTruthy());
+    expect(screen.getByText('Too many requests in the last minute, so I did not ask.')).toBeTruthy();
+  });
+
+  it('says a repeated press was not charged again, without making a notice of it', async () => {
+    harness({
+      reply: {
+        status: 'duplicate',
+        proposal: null,
+        model: 'gpt-6.1-sol',
+        costMicros: null,
+        priced: false,
+        error: 'That exact request has already been made.',
+      },
+    });
+    await ask('anything at all');
+
+    await waitFor(() =>
+      expect(screen.getByText('You had already asked that, so it was not charged again.')).toBeTruthy());
+    // Not a standing banner: it is about one press, not about the state of things.
+    expect(screen.queryByText(/already been made/)).toBeNull();
+  });
+
+  it('sends one request token per press', async () => {
+    const { value } = harness({});
+    await ask('first thing');
+    await waitFor(() => expect(screen.getByText('Save this contact')).toBeTruthy());
+
+    const sent = (value.askAssistant as unknown as { mock: { calls: unknown[][] } }).mock.calls;
+    expect(sent).toHaveLength(1);
+    const request = sent[0][0] as { requestToken: string };
+    expect(typeof request.requestToken).toBe('string');
+    expect(request.requestToken.length).toBeGreaterThan(10);
+  });
+
   it('shows a failed turn as a failure, with nothing proposed', async () => {
     harness({
       reply: {

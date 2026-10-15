@@ -279,6 +279,14 @@ export function buildInstructions(context: AssistantContext): string {
     'the history says, no placeholders in brackets. Match the language the contact',
     'uses. If the history shows the last message went unanswered, acknowledge that',
     'without apologising for it twice.',
+    '',
+    'REVISING A DRAFT',
+    'When you are asked to change a message you already wrote, that message is',
+    'quoted back to you in the conversation above, with its length. Change it, do',
+    'not start again. If you are asked to make it shorter, the new one has to be',
+    'genuinely shorter than that one: fewer characters, not merely fewer sentences.',
+    'Cut words, not the point. Whatever it was asking the contact for, it still has',
+    'to ask.',
   ].join('\n');
 }
 

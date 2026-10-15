@@ -214,6 +214,9 @@ the platform. These have to be set with `supabase secrets set`:
 | `OPENAI_API_KEY` | The assistant's model key. Read by `supabase/functions/assistant` and by nothing else. Without it the panel still opens and says it is waiting on a key; with it, it answers. `OPENAI-API-KEY` with hyphens is also accepted, because the dashboard allows that name and a key that is set but invisible to the function looks exactly like a broken feature. The function logs which name it found, never the value. |
 | `ASSISTANT_MODEL` | Optional. Replaces the default model for all three assistant operations. |
 | `ASSISTANT_MODEL_CAPTURE`, `ASSISTANT_MODEL_DRAFT`, `ASSISTANT_MODEL_BRIEF` | Optional, one operation each, and they win over `ASSISTANT_MODEL`. The defaults and the reasoning are in `server/integrations/openai.ts`. |
+| `ASSISTANT_DAILY_LIMIT_USD` | Optional. The ceiling on assistant spend per person per rolling 24 hours, written in dollars, for example `1` or `0.50`. Defaults to `1`. A value that cannot be parsed falls back to that default rather than to no limit. |
+| `ASSISTANT_MAX_PER_MINUTE` | Optional. Requests per person per minute. Defaults to `10`. A measured turn takes between three and seventeen seconds, so this stops loops rather than people. |
+| `ASSISTANT_HOLD_SECONDS` | Optional. How long a reservation is believed to be in flight before it is swept. Defaults to `120`, comfortably past the 45 second model timeout. |
 
 `GOOGLE_CALENDAR_ID` is gone. The calendar is no longer a dedicated one shared
 with the service account; it is each person's own primary calendar, under their
@@ -285,12 +288,65 @@ with the anon key. It answers `42501`, `capture_contact needs a signed in
 caller`, which says the function exists and that it reads `auth.uid()` rather
 than taking an owner from the arguments.
 
+### What it is allowed to spend
+
+The ceiling is enforced before the model is called, not reported afterwards.
+
+A request books its worst case first, under a per-owner advisory lock, and
+settles for its real cost when it finishes. Budget in flight counts as spent, so
+two requests arriving together cannot both fit through a gap only one of them
+fits through. That is the whole reason it is a reservation rather than a check:
+simultaneous requests are exactly the case a ceiling exists for.
+
+What counts towards the limit:
+
+| Row | Counts as |
+|---|---|
+| Settled, cost known | what it cost |
+| Settled, cost unknown | its reserved worst case |
+| Reservation still in flight | its reserved worst case |
+| Abandoned reservation, never settled | its reserved worst case, kept |
+
+The second row is the one that matters: a request that failed on the way back
+was billed and reported nothing, so counting it as zero would let unknown costs
+walk through the ceiling.
+
+Three refusals, none of which reach the provider and none of which are charged:
+`daily_cap`, `rate_limited` and `duplicate`. The last is keyed on a token the
+browser generates per press of Ask, with a unique index behind it, so a double
+click or a retried request is recognised rather than asked again. A fourth,
+`unavailable`, happens when the accounting itself cannot be reached: the request
+is refused rather than waved through, because a request that cannot be counted
+cannot be capped.
+
+`server/integrations/assistantRun.test.ts` is where "a blocked request never
+reaches the provider" is proved: the model call is passed in as a function and
+the test asserts it was never invoked.
+
+**The one ceiling this does not provide** is on OpenAI's side. A project budget
+limit in the OpenAI dashboard is the only thing that stops spend if this
+function is bypassed or misconfigured, and it cannot be read with a
+project-scoped key. Set it there as well.
+
 ### What it costs
 
-`ai_usage` holds one row per request, including failed ones, because a failed
-request is still billed. Cost is in `cost_micros`, millionths of a dollar, as an
-integer, and it is **nullable**: null means the cost is not known, which is not
-the same as zero and must not be summed as if it were.
+`ai_usage` holds one row per request, including failed ones and refused ones,
+because a failed request is still billed. Cost is in `cost_micros`, millionths
+of a dollar, as an integer, and it is **nullable**: null means the cost is not
+known, which is not the same as zero and must not be summed as if it were.
+
+Cost is worked out from the usage figures in the provider's response, at the
+rates in `server/integrations/openai.ts`, which were checked against the
+published price list on 2026-10-15. Cached input tokens are taken out of the
+input count and charged at their own rate rather than averaged in. The model
+used for the arithmetic is the one that was **asked for**, never the one the
+response names itself: a provider renaming itself mid-flight does not get to
+change what a request is priced at, and a mismatch between the two is recorded
+in `note`.
+
+Measured on 2026-10-15 through the real API: a capture turn is about **1.3
+cents** (1,461 in, 960 out), drafting about **half a cent**, and a history
+question on the cheap model about **three hundredths of a cent**.
 
 Three cases, kept apart on purpose:
 

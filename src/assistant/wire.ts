@@ -140,7 +140,9 @@ export const PROPOSAL_FIELDS = [
 export interface AssistantAnswer {
   status:
     | 'ok' | 'refused' | 'failed' | 'no_model_key' | 'no_credit' | 'not_signed_in'
-    | 'not_configured' | 'bad_request' | 'unreachable' | 'unavailable';
+    | 'not_configured' | 'bad_request' | 'unreachable' | 'unavailable'
+    /* The server refused to spend. None of these three reached the provider. */
+    | 'daily_cap' | 'rate_limited' | 'duplicate';
   proposal: AssistantProposal | null;
   model: string | null;
   /** Millionths of a dollar for this one turn. Zero when the model has no price. */
@@ -155,6 +157,14 @@ export interface AssistantRequest {
   message: string;
   turns: { role: 'user' | 'assistant'; content: string }[];
   context: AssistantContext;
+  /**
+   * One value per press of Ask.
+   *
+   * The server holds a unique index on it, so a double press or a retried
+   * request is recognised and refused rather than asked and charged twice.
+   * Generated at the press, for the same reason the completion token is.
+   */
+  requestToken: string;
 }
 
 /**

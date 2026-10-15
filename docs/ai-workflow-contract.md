@@ -40,6 +40,13 @@ What it dropped is shown in the panel rather than swallowed.
 `ai_usage`, including failed calls, because a failed call is still billed. The
 panel shows the last thirty days. There is no customer billing.
 
+**There is a ceiling, and it is enforced before the money is spent.** A dollar
+per person per rolling 24 hours by default, ten requests a minute, and one
+charge per press of Ask. A request books its worst case before it runs and
+settles for the real figure afterwards, so two requests in flight together
+cannot both pass a limit only one of them fits under. Blocked requests never
+reach the provider, which is asserted by a test rather than by this sentence.
+
 ## What is not built
 
 - **Voice input.** Section 7 describes what it will be. There is no microphone.
@@ -248,3 +255,6 @@ certainly not yes.
 | The model cannot name a contact that does not exist | the server checks every id against the ones that were in the prompt |
 | What a request cost is known | `ai_usage`, written server side, readable by its owner and writable by nobody in the browser |
 | A cost nobody knows is not zero | nullable `cost_micros` with `unknown_cost_says_why`, and "at least" in front of a total that has one |
+| Spend has a ceiling that holds under load | `reserve_ai_spend`, a per-owner advisory lock and a booked worst case |
+| One press of Ask is charged once | `ai_usage_one_per_request`, unique on the token the browser generates |
+| A request that cannot be counted is not made | the `unavailable` refusal, which does not call the provider |

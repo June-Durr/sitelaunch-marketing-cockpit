@@ -32,7 +32,7 @@ import {
   AssistantContext, type AssistantValue, type Candidate, type ContactEdit,
   type DraftEdit, type RevisionPatch, type SavedRecord, type TouchEdit, type Turn,
 } from './context';
-import type { AiUsageSummary, ProposedFact } from './wire';
+import type { AiUsageSummary, AssistantAnswer, ProposedFact } from './wire';
 
 /** How many earlier turns travel with the next question. */
 const TURNS_SENT = 8;
@@ -196,13 +196,28 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
           drafts,
         });
 
-        // The conversation so far, trimmed. The newest question is sent on its
-        // own, so a malformed history cannot lose it.
+        /*
+         * The conversation so far, trimmed, with the drafts in it.
+         *
+         * An assistant turn used to travel as its reply line alone, which meant
+         * a model asked to shorten a message had never seen the message. It had
+         * to write a new one from the history and then had nothing to be shorter
+         * than. Sending the wording it proposed is what makes "make it shorter"
+         * a revision rather than a second attempt.
+         */
         const history = turns
           .slice(-TURNS_SENT)
           .map((turn) => ({
             role: turn.kind === 'you' ? ('user' as const) : ('assistant' as const),
-            content: turn.kind === 'you' ? turn.text : turn.text,
+            content: turn.kind === 'you'
+              ? turn.text
+              : [
+                  turn.text,
+                  turn.proposal?.draft.body
+                    ? `The message I wrote, ${turn.proposal.draft.body.length} characters:`
+                      + `\n${turn.proposal.draft.body}`
+                    : null,
+                ].filter((part): part is string => Boolean(part)).join('\n'),
           }))
           .filter((turn) => turn.content.trim() !== '');
 
@@ -211,6 +226,9 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
           message: text,
           turns: history,
           context: built.context,
+          // One per press. A retry of this same press is refused by the server
+          // rather than asked again.
+          requestToken: pressToken('ask'),
         });
 
         const candidates: Candidate[] = built.context.focus
@@ -229,13 +247,19 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
          * about it, because that is a standing state. The turn gets one short
          * line, so the same paragraph is not printed twice on screen.
          */
-        const configuration = answer.status === 'no_model_key' || answer.status === 'no_credit';
-        if (configuration) setNotice(answer.error);
-        const shortError = answer.status === 'no_model_key'
-          ? 'There is no model key set yet, so I cannot answer.'
-          : answer.status === 'no_credit'
-            ? 'The model account is out of credits, so I cannot answer.'
-            : (answer.error ?? answer.status);
+        const STANDING: AssistantAnswer['status'][] = [
+          'no_model_key', 'no_credit', 'daily_cap', 'rate_limited',
+        ];
+        if (STANDING.includes(answer.status)) setNotice(answer.error);
+
+        const SHORT: Partial<Record<AssistantAnswer['status'], string>> = {
+          no_model_key: 'There is no model key set yet, so I cannot answer.',
+          no_credit: 'The model account is out of credits, so I cannot answer.',
+          daily_cap: 'That would go over the spending limit, so I did not ask.',
+          rate_limited: 'Too many requests in the last minute, so I did not ask.',
+          duplicate: 'You had already asked that, so it was not charged again.',
+        };
+        const shortError = SHORT[answer.status] ?? answer.error ?? answer.status;
 
         const settled = answer.proposal?.leadId ?? built.focusLeadId;
         if (settled && settled !== focusLeadId) setFocusLeadId(settled);

@@ -802,6 +802,7 @@ export function createSupabaseRepository(): Repository {
       const known: AssistantAnswer['status'][] = [
         'ok', 'refused', 'failed', 'no_model_key', 'no_credit', 'not_signed_in',
         'not_configured', 'bad_request', 'unreachable', 'unavailable',
+        'daily_cap', 'rate_limited', 'duplicate',
       ];
       const reported = typeof body.status === 'string' ? body.status : '';
       const status = (known as string[]).includes(reported)
