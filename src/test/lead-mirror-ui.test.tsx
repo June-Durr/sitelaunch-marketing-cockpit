@@ -27,7 +27,7 @@ import {
   EMPTY_DATASET, type CalendarStatus, type LeadMirrorOutcome, type LeadMirrorStatus,
 } from '../data/repository';
 import type { Dataset } from '../types/domain';
-import { makeActivity, makeLead, makeTask } from './fixtures';
+import { NO_ASSISTANT, makeActivity, makeLead, makeTask } from './fixtures';
 
 /* ------------------------------------------------------------- fixtures -- */
 
@@ -129,6 +129,7 @@ function supabaseContext(options: {
     loadRecentlyDeleted: null,
     loadSyncPending: null,
     drainSyncJobs: null,
+    ...NO_ASSISTANT,
     startCalendarOAuth: null,
     disconnectCalendar: null,
   };

@@ -2,6 +2,8 @@ import { NavLink, Outlet } from 'react-router-dom';
 import { useData } from '../data/context';
 import { TaskActionsProvider, useTaskActions } from '../data/taskActions';
 import { CompletionToast } from './CompletionToast';
+import { AssistantProvider } from '../assistant/AssistantProvider';
+import { AssistantLauncher, AssistantPanel } from '../assistant/AssistantPanel';
 import { useAuth } from '../auth/context';
 import { today } from '../lib/dates';
 import {
@@ -43,7 +45,14 @@ function LINKS(
 export function AppShell() {
   return (
     <TaskActionsProvider>
-      <Shell />
+      {/*
+        Inside the task actions provider, so the assistant and the Done buttons
+        share one idea of what has just happened, and inside the router, because
+        the panel's awareness of which screen you are on is the route.
+      */}
+      <AssistantProvider>
+        <Shell />
+      </AssistantProvider>
     </TaskActionsProvider>
   );
 }
@@ -149,6 +158,14 @@ function Shell() {
       {/* Outside <main>, so it is not inside the scrolling column and stays
           put while the page moves under it. */}
       <CompletionToast toast={toast} onDismiss={dismissToast} />
+
+      {/*
+        Both outside <main> for the same reason, and both render nothing at all
+        in browser-only mode: there is no server there to hold a model key, and
+        an input box that cannot answer is worse than no input box.
+      */}
+      <AssistantLauncher />
+      <AssistantPanel />
     </div>
   );
 }

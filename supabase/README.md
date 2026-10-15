@@ -211,6 +211,9 @@ the platform. These have to be set with `supabase secrets set`:
 | `GOOGLE_OAUTH_CLIENT_SECRET` | The other half of that client. With this and the redirect uri, somebody else could run the whole consent flow as SiteLaunch. |
 | `GOOGLE_OAUTH_REDIRECT_URI` | Must match an Authorized redirect URI on the Google client, exactly. |
 | `COCKPIT_APP_URL` | Where the callback sends a browser afterwards. The only acceptable destination, so there is no open redirect. |
+| `OPENAI_API_KEY` | The assistant's model key. Read by `supabase/functions/assistant` and by nothing else. Without it the panel still opens and says it is waiting on a key; with it, it answers. |
+| `ASSISTANT_MODEL` | Optional. Replaces the default model for all three assistant operations. |
+| `ASSISTANT_MODEL_CAPTURE`, `ASSISTANT_MODEL_DRAFT`, `ASSISTANT_MODEL_BRIEF` | Optional, one operation each, and they win over `ASSISTANT_MODEL`. The defaults and the reasoning are in `server/integrations/openai.ts`. |
 
 `GOOGLE_CALENDAR_ID` is gone. The calendar is no longer a dedicated one shared
 with the service account; it is each person's own primary calendar, under their
@@ -233,6 +236,62 @@ choice here: it is one line with no braces, quotes or newlines, so nothing mangl
 the way through an env file. Set every secret from a file with
 `supabase secrets set --env-file`, never as `NAME=value` on a command line, where it
 would survive in shell history.
+
+---
+
+## The assistant
+
+One function, `supabase/functions/assistant`, and one request per turn. It is
+the only place in the deployment that holds a model key and the only place that
+talks to a model.
+
+### What it needs
+
+- `OPENAI_API_KEY`, set with `supabase secrets set --env-file`. Nothing else is
+  required: there is no second credential and no `VITE_` variable. Until it is
+  set the function answers `503` with `no_model_key`, and the panel repeats that
+  in words rather than looking broken.
+
+### What it does and does not do
+
+It reads the caller's session and refuses anything else, including the
+scheduler's shared secret: there is nothing here for a scheduler to ask. It
+builds the prompt from records the browser sends, which are that person's own
+rows read under row level security, asks the model once, validates the answer
+and returns a proposal.
+
+It writes exactly one thing: a row in `ai_usage`, with the service role, because
+that table's policy gives the browser read and nothing else. A browser that
+could write its own usage rows could understate what it had spent.
+
+Every other write happens afterwards, from the browser, through
+`capture_contact`, `record_conversation`, `save_message_draft` and
+`mark_draft_sent`. All four are `security invoker`, so row level security
+applies, and all four are idempotent on a token. A model cannot reach them.
+
+### Checking it without a session
+
+```
+curl -s -X POST "$SUPABASE_URL/functions/v1/assistant" \
+  -H 'content-type: application/json' -d '{"message":"hello"}'
+```
+
+A healthy deployment answers `401` with `{"status":"not_signed_in"}`. The same
+request carrying `x-sync-cron-secret` gets the identical answer, which is the
+point: a shared secret cannot ask a question on somebody's behalf.
+
+To prove the database half is there without signing in, call `capture_contact`
+with the anon key. It answers `42501`, `capture_contact needs a signed in
+caller`, which says the function exists and that it reads `auth.uid()` rather
+than taking an owner from the arguments.
+
+### What it costs
+
+`ai_usage` holds one row per request, including failed ones, because a failed
+request is still billed. Cost is in `cost_micros`, millionths of a dollar, as an
+integer. The price table lives in `server/integrations/openai.ts`; a model that
+is not in it still gets a row with real token counts and a zero cost, marked in
+`error`, so the total is understood as a floor rather than as free.
 
 ---
 

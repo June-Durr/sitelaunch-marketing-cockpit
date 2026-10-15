@@ -26,6 +26,7 @@ import { DATA_SECTIONS } from '../config/dataSections';
 import { buildSeedDataset } from '../data/seed';
 import type { AnalyticsStatus, CalendarStatus } from '../data/repository';
 import type { IntegrationConnection } from '../types/integrations';
+import { NO_ASSISTANT } from './fixtures';
 
 /* ------------------------------------------------------------- fixtures -- */
 
@@ -120,6 +121,7 @@ function context(over: Partial<DataContextValue> = {}): DataContextValue {
     loadRecentlyDeleted: null,
     loadSyncPending: null,
     drainSyncJobs: null,
+    ...NO_ASSISTANT,
     startCalendarOAuth: async () => ({ status: 'ready', authorizeUrl: null, error: null }),
     disconnectCalendar: async () => ({
       ok: true, status: 'disconnected', revokedAtGoogle: true, eventsRemoved: false,

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useData } from '../data/context';
+import { useAssistantIfPresent } from '../assistant/context';
 import { Empty, Observed, PageHead, Stat, Tag, Unknown } from '../components/primitives';
 import { LeadForm } from './LeadForm';
 import { readSettings, writeSettings } from '../data/settings';
@@ -25,6 +26,22 @@ export function Pipeline() {
     () => readSettings().pipelineView,
   );
   const [editing, setEditing] = useState<{ lead: Lead | null } | null>(null);
+
+  /**
+   * Point the assistant at whoever is open.
+   *
+   * This is the whole of the panel's contact awareness on this screen: open
+   * somebody, and "where did we leave off" means them without anybody typing
+   * their name. Through useAssistantIfPresent rather than useAssistant, because
+   * this screen is also rendered on its own in the tests, where there is no
+   * assistant and should not need to be one.
+   */
+  const assistant = useAssistantIfPresent();
+  const openLeadId = editing?.lead?.id ?? null;
+  useEffect(() => {
+    if (!assistant || !openLeadId) return;
+    assistant.pin(openLeadId);
+  }, [assistant, openLeadId]);
 
   /**
    * Open one particular person, when something linked straight to them.

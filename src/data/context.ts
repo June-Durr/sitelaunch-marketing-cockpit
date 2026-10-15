@@ -2,11 +2,14 @@ import { createContext, useContext } from 'react';
 import type { Dataset } from '../types/domain';
 import type {
   AnalyticsProvider, AnalyticsStatus, CalendarDisconnectOutcome, CalendarOAuthStart,
-  CompletionInput, CompletionOutcome, UndoOutcome,
+  CaptureInput, CaptureOutcome, CompletionInput, CompletionOutcome,
+  ConversationInput, ConversationOutcome, DraftOutcome, UndoOutcome,
   CalendarStatus, CalendarSyncOutcome, ImportReport, LeadMirrorAction,
   LeadMirrorOutcome, LeadMirrorStatus, NewRow, ReconcileMode, RowPatch, SyncMode,
   SyncTriggerOutcome, TableMap, TableName,
 } from './repository';
+import type { ExtractedFact, MessageDraft } from '../types/assistant';
+import type { AiUsageSummary, AssistantAnswer, AssistantRequest } from '../assistant/wire';
 import { EMPTY_DATASET } from './repository';
 
 export interface DataContextValue {
@@ -71,6 +74,28 @@ export interface DataContextValue {
   loadSyncPending: (() => Promise<{ calendar: boolean; leadMirror: boolean }>) | null;
   /** Null in browser-local mode. Asks the worker to run this owner's queue. */
   drainSyncJobs: (() => Promise<{ ran: boolean; succeeded: number; failed: number }>) | null;
+
+  /**
+   * Null in browser-local mode, which has no server to hold a model key.
+   *
+   * The panel shows what it can do from this: with no adapter there is no
+   * assistant, and it says so rather than offering a box that cannot answer.
+   */
+  askAssistant: ((input: AssistantRequest) => Promise<AssistantAnswer>) | null;
+  captureContact: ((input: CaptureInput) => Promise<CaptureOutcome>) | null;
+  recordConversation: ((input: ConversationInput) => Promise<ConversationOutcome>) | null;
+  saveDraft:
+    | ((leadId: string, channel: string | null, body: string) => Promise<DraftOutcome>)
+    | null;
+  markDraftCopied: ((draftId: string) => Promise<DraftOutcome>) | null;
+  markDraftSent:
+    | ((
+        draftId: string, token: string, sentOn: string, finalBody?: string | null,
+      ) => Promise<DraftOutcome>)
+    | null;
+  loadDrafts: ((leadId: string) => Promise<MessageDraft[]>) | null;
+  loadFacts: ((leadId: string) => Promise<ExtractedFact[]>) | null;
+  loadAiUsage: ((days?: number) => Promise<AiUsageSummary>) | null;
 }
 
 export const DataContext = createContext<DataContextValue>({
@@ -109,6 +134,15 @@ export const DataContext = createContext<DataContextValue>({
   loadRecentlyDeleted: null,
   loadSyncPending: null,
   drainSyncJobs: null,
+  askAssistant: null,
+  captureContact: null,
+  recordConversation: null,
+  saveDraft: null,
+  markDraftCopied: null,
+  markDraftSent: null,
+  loadDrafts: null,
+  loadFacts: null,
+  loadAiUsage: null,
 });
 
 export function useData(): DataContextValue {

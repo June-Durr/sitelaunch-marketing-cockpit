@@ -7,7 +7,8 @@
 import type { Dataset } from '../types/domain';
 import type {
   AnalyticsProvider, AnalyticsStatus, CalendarDisconnectOutcome, CalendarOAuthStart,
-  CompletionInput, CompletionOutcome, UndoOutcome, UndoStatus,
+  CaptureInput, CaptureOutcome, CompletionInput, CompletionOutcome,
+  ConversationInput, ConversationOutcome, DraftOutcome, UndoOutcome, UndoStatus,
   CalendarStatus, CalendarSyncOutcome,
   ImportReport, LeadMirrorAction, LeadMirrorOutcome, LeadMirrorStatus, NewRow,
   ReconcileMode, Repository, RowPatch, SyncMode, SyncTriggerOutcome, TableMap,
@@ -18,6 +19,8 @@ import type {
   Ga4DailyTraffic, IntegrationConnection, SearchConsoleDaily, SyncRun,
 } from '../types/integrations';
 import { functionsBaseUrl, getSupabase } from './supabaseClient';
+import type { ExtractedFact, MessageDraft } from '../types/assistant';
+import type { AiUsageSummary, AssistantAnswer, AssistantRequest } from '../assistant/wire';
 
 /** Table name -> its array in the in-memory Dataset. */
 const TABLE_TO_COLLECTION: Record<TableName, keyof Dataset> = {
@@ -751,6 +754,228 @@ export function createSupabaseRepository(): Repository {
         error: body.error ?? null,
       };
     },
+
+    /* ----------------------------------------------------- the assistant --- */
+
+    /**
+     * Ask the assistant one question.
+     *
+     * Sends this browser's session, what was typed, and the records it is
+     * already showing. The model key lives in the function's own secrets, so a
+     * person using this never holds it and this request cannot carry it.
+     *
+     * Nothing is written here. What comes back is a proposal, and every write
+     * below is a separate call the person has to ask for.
+     */
+    async askAssistant(input: AssistantRequest): Promise<AssistantAnswer> {
+      const nothing = (
+        status: AssistantAnswer['status'], error: string | null,
+      ): AssistantAnswer => ({
+        status, proposal: null, model: null, costMicros: null, priced: false, error,
+      });
+
+      const { data: session } = await db.auth.getSession();
+      const token = session.session?.access_token;
+      if (!token) return nothing('not_signed_in', 'Sign in first.');
+
+      let response: Response;
+      try {
+        response = await fetch(`${functionsBaseUrl()}/assistant`, {
+          method: 'POST',
+          headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+          body: JSON.stringify(input),
+        });
+      } catch {
+        return nothing(
+          'unreachable',
+          'Could not reach the assistant. The function may not be deployed yet.',
+        );
+      }
+
+      let body: Record<string, unknown> = {};
+      try {
+        body = (await response.json()) as Record<string, unknown>;
+      } catch {
+        body = {};
+      }
+
+      const known: AssistantAnswer['status'][] = [
+        'ok', 'refused', 'failed', 'no_model_key', 'not_signed_in',
+        'not_configured', 'bad_request', 'unreachable', 'unavailable',
+      ];
+      const reported = typeof body.status === 'string' ? body.status : '';
+      const status = (known as string[]).includes(reported)
+        ? (reported as AssistantAnswer['status'])
+        : 'failed';
+
+      return {
+        status,
+        // Trusted as a shape, not as a fact: the server has already dropped
+        // everything it would not stand behind.
+        proposal: (body.proposal ?? null) as AssistantAnswer['proposal'],
+        model: typeof body.model === 'string' ? body.model : null,
+        costMicros: typeof body.costMicros === 'number' ? body.costMicros : null,
+        priced: body.priced === true,
+        error: typeof body.error === 'string' ? body.error : null,
+      };
+    },
+
+    /** Save a contact, the meeting when the day is known, and the facts. One write. */
+    async captureContact(input: CaptureInput): Promise<CaptureOutcome> {
+      const { data, error } = await db.rpc('capture_contact', {
+        p_token: input.token,
+        p_name: input.name,
+        p_organization: input.organization,
+        p_role: input.role,
+        p_channel: input.channel,
+        p_handle: input.handle,
+        p_met_on: input.metOn,
+        p_location: input.location,
+        p_interest: input.interest,
+        p_summary: input.summary,
+        p_next_action: input.nextAction,
+        p_next_due_date: input.nextDueDate,
+        p_facts: input.facts,
+      });
+
+      if (error) {
+        return {
+          ok: false, leadId: null, reused: false, recordedMeeting: false,
+          factsWritten: 0, factsSkipped: 0, nextDueDate: null, error: error.message,
+        };
+      }
+
+      const body = (data ?? {}) as Record<string, unknown>;
+      return {
+        ok: true,
+        leadId: typeof body.lead_id === 'string' ? body.lead_id : null,
+        reused: body.reused === true,
+        recordedMeeting: body.recorded_meeting === true,
+        factsWritten: typeof body.facts_written === 'number' ? body.facts_written : 0,
+        factsSkipped: typeof body.facts_skipped === 'number' ? body.facts_skipped : 0,
+        nextDueDate: typeof body.next_due_date === 'string' ? body.next_due_date : null,
+        error: null,
+      };
+    },
+
+    /** Record contact that already happened, and move everything that follows. */
+    async recordConversation(input: ConversationInput): Promise<ConversationOutcome> {
+      const { data, error } = await db.rpc('record_conversation', {
+        p_lead_id: input.leadId,
+        p_token: input.token,
+        p_occurred_on: input.occurredOn,
+        p_summary: input.summary,
+        p_channel: input.channel ?? null,
+        p_activity_type: input.activityType ?? 'conversation',
+        p_approved_message: input.approvedMessage ?? null,
+        p_outcome: input.outcome ?? null,
+        p_next_due_date: input.nextDueDate ?? null,
+        p_next_action: input.nextAction ?? null,
+        p_evidence: input.evidence ?? 'User report',
+      });
+
+      if (error) {
+        return {
+          ok: false, activityId: null, reused: false, leadId: null,
+          occurredOn: null, nextDueDate: null, error: error.message,
+        };
+      }
+
+      const body = (data ?? {}) as Record<string, unknown>;
+      return {
+        ok: true,
+        activityId: typeof body.activity_id === 'string' ? body.activity_id : null,
+        reused: body.reused === true,
+        leadId: typeof body.lead_id === 'string' ? body.lead_id : input.leadId,
+        occurredOn: typeof body.occurred_on === 'string' ? body.occurred_on : input.occurredOn,
+        nextDueDate: typeof body.next_due_date === 'string' ? body.next_due_date : null,
+        error: null,
+      };
+    },
+
+    async saveDraft(
+      leadId: string, channel: string | null, body: string,
+    ): Promise<DraftOutcome> {
+      const { data, error } = await db.rpc('save_message_draft', {
+        p_lead_id: leadId, p_channel: channel, p_body: body,
+      });
+      return readDraftOutcome(data, error?.message ?? null);
+    },
+
+    /** Note that a draft was copied. Deliberately not a send, and it says so. */
+    async markDraftCopied(draftId: string): Promise<DraftOutcome> {
+      const { data, error } = await db.rpc('mark_draft_copied', { p_draft_id: draftId });
+      return readDraftOutcome(data, error?.message ?? null);
+    },
+
+    /** The one path that produces a sent draft, because somebody said so. */
+    async markDraftSent(
+      draftId: string, token: string, sentOn: string, finalBody?: string | null,
+    ): Promise<DraftOutcome> {
+      const { data, error } = await db.rpc('mark_draft_sent', {
+        p_draft_id: draftId,
+        p_token: token,
+        p_sent_on: sentOn,
+        p_final_body: finalBody ?? null,
+      });
+      return readDraftOutcome(data, error?.message ?? null);
+    },
+
+    async loadDrafts(leadId: string): Promise<MessageDraft[]> {
+      const { data, error } = await db
+        .from('message_drafts')
+        .select('*')
+        .eq('lead_id', leadId)
+        .order('created_at', { ascending: false });
+      if (error) return [];
+      return (data ?? []) as MessageDraft[];
+    },
+
+    async loadFacts(leadId: string): Promise<ExtractedFact[]> {
+      const { data, error } = await db
+        .from('extracted_facts')
+        .select('*')
+        .eq('lead_id', leadId)
+        .order('created_at', { ascending: false });
+      if (error) return [];
+      return (data ?? []) as ExtractedFact[];
+    },
+
+    /**
+     * What the assistant has cost, read from the rows the server wrote.
+     *
+     * Summed here rather than in SQL because it is a handful of rows and a view
+     * would be another migration to keep in step. Two things are counted apart
+     * from the money: calls that failed, which were still billed, and calls on a
+     * model with no price on file, which make the total a floor rather than a
+     * total. Saying "about" when it is a floor is the difference between a
+     * number somebody can trust and one they cannot.
+     */
+    async loadAiUsage(days = 30): Promise<AiUsageSummary> {
+      const since = new Date(Date.now() - days * 86_400_000).toISOString();
+      const empty: AiUsageSummary = {
+        requests: 0, costMicros: 0, unpriced: 0, failures: 0, since: since.slice(0, 10),
+      };
+
+      const { data, error } = await db
+        .from('ai_usage')
+        .select('cost_micros, error, created_at')
+        .gte('created_at', since);
+      if (error) return empty;
+
+      const rows = (data ?? []) as { cost_micros: number | null; error: string | null }[];
+      let costMicros = 0;
+      let unpriced = 0;
+      let failures = 0;
+      for (const row of rows) {
+        costMicros += typeof row.cost_micros === 'number' ? row.cost_micros : 0;
+        const problem = row.error ?? '';
+        if (problem === '') continue;
+        if (problem.includes('no price on file')) unpriced += 1;
+        else failures += 1;
+      }
+      return { requests: rows.length, costMicros, unpriced, failures, since: since.slice(0, 10) };
+    },
   };
 
   /**
@@ -849,6 +1074,36 @@ export function createSupabaseRepository(): Repository {
  * undo" and "somebody edited this since" are answers a screen shows a person,
  * not errors a caller should have to catch.
  */
+/**
+ * One shape for the three draft operations.
+ *
+ * `sent` is read from the database's own answer rather than inferred from the
+ * status string, because this is the exact place a copy would quietly become a
+ * send. mark_draft_copied returns sent:false explicitly for the same reason.
+ */
+function readDraftOutcome(data: unknown, error: string | null): DraftOutcome {
+  if (error !== null) {
+    return {
+      ok: false, draftId: null, status: 'failed', sent: false,
+      activityId: null, sentOn: null, error,
+    };
+  }
+  const body = (data ?? {}) as Record<string, unknown>;
+  const reported = typeof body.status === 'string' ? body.status : 'failed';
+  const status = (['draft', 'copied', 'sent', 'not_found'] as string[]).includes(reported)
+    ? (reported as DraftOutcome['status'])
+    : 'failed';
+  return {
+    ok: status !== 'failed' && status !== 'not_found',
+    draftId: typeof body.draft_id === 'string' ? body.draft_id : null,
+    status,
+    sent: status === 'sent',
+    activityId: typeof body.activity_id === 'string' ? body.activity_id : null,
+    sentOn: typeof body.sent_on === 'string' ? body.sent_on : null,
+    error: null,
+  };
+}
+
 async function callUndo(
   client: ReturnType<typeof getSupabase>,
   fn: string,

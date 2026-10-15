@@ -333,9 +333,30 @@ export interface ActivityEvent {
   last_synced_at: string | null;
   sync_error: string | null;
 
+  /**
+   * Set when this record has been reversed by an undo. Optional on purpose.
+   *
+   * The column arrived in migration 0011, long after the first backups were
+   * written, and a backup is validated against this type. Declaring these as
+   * required would make every export taken before 0011 fail the app's own
+   * validator, which is a real failure somebody hit. Optional means the reader
+   * treats an absent field as "this row predates the column", which is true.
+   */
+  reversed_at?: string | null;
+  reversal_note?: string | null;
+  /** The exact wording that was approved and sent, when there was one. From 0012. */
+  approved_message?: string | null;
+  /** What came of it, in the words somebody wrote at the time. From 0012. */
+  outcome?: string | null;
+
   is_seed: boolean;
   created_at: string;
   updated_at: string;
+}
+
+/** Does this record describe something that actually stands? */
+export function isReversed(event: ActivityEvent): boolean {
+  return typeof event.reversed_at === 'string' && event.reversed_at !== '';
 }
 
 /** One line of the arithmetic behind a recommendation. */

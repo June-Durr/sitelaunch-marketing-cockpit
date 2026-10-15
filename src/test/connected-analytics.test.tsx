@@ -28,6 +28,7 @@ import type { AnalyticsStatus } from '../data/repository';
 import type {
   Ga4DailyTraffic, IntegrationConnection, SearchConsoleDaily, SyncRun,
 } from '../types/integrations';
+import { NO_ASSISTANT } from './fixtures';
 
 /* ------------------------------------------------------------- fixtures -- */
 
@@ -163,6 +164,7 @@ function supabaseContext(status: AnalyticsStatus): DataContextValue {
     loadRecentlyDeleted: null,
     loadSyncPending: null,
     drainSyncJobs: null,
+    ...NO_ASSISTANT,
     startCalendarOAuth: null,
     disconnectCalendar: null,
     triggerSync: async () => ({ ok: true, status: 'succeeded', rowsWritten: 0, error: null }),

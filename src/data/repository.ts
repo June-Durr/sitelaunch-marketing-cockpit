@@ -5,6 +5,10 @@ import type {
 import type {
   Ga4DailyTraffic, IntegrationConnection, SearchConsoleDaily, SyncRun,
 } from '../types/integrations';
+import type { ExtractedFact, MessageDraft } from '../types/assistant';
+import type {
+  AiUsageSummary, AssistantAnswer, AssistantRequest, ProposedFact,
+} from '../assistant/wire';
 
 export interface TableMap {
   accounts: Account;
@@ -259,6 +263,94 @@ export interface CompletionOutcome {
   error: string | null;
 }
 
+/* ----------------------------------------------------- what the assistant does --- */
+
+/**
+ * Everything one capture writes, handed to the one function that writes it.
+ *
+ * Nothing in here is optional in the sense of "fill it in later". A null is a
+ * thing nobody knows yet, and it stays null: a contact saved with no date is
+ * better than a contact saved with today's date pretending to be the day they
+ * were met.
+ */
+export interface CaptureInput {
+  /** One value per press of Save, same contract as a completion token. */
+  token: string;
+  name: string | null;
+  organization: string | null;
+  role: string | null;
+  channel: string | null;
+  handle: string | null;
+  /** The day they were met, when it is actually known. */
+  metOn: string | null;
+  location: string | null;
+  interest: string | null;
+  summary: string | null;
+  nextAction: string | null;
+  /** Decided by src/config/followUp.ts, not by the model and not by the database. */
+  nextDueDate: string | null;
+  facts: ProposedFact[];
+}
+
+export interface CaptureOutcome {
+  ok: boolean;
+  leadId: string | null;
+  /** True when this exact press had already been saved. */
+  reused: boolean;
+  /** False when no day was known, so no activity was written. Not a failure. */
+  recordedMeeting: boolean;
+  factsWritten: number;
+  /** Facts left out because they would have been dishonest. Said out loud. */
+  factsSkipped: number;
+  nextDueDate: string | null;
+  error: string | null;
+}
+
+/** A contact that happened, as the person confirmed it. */
+export interface ConversationInput {
+  leadId: string;
+  token: string;
+  /** Required. The day the person says it happened, never a guess. */
+  occurredOn: string;
+  summary: string;
+  channel?: string | null;
+  activityType?: 'conversation' | 'follow_up_sent' | 'reply_received' | 'networking_event';
+  /** The exact wording that was approved and sent, when there was one. */
+  approvedMessage?: string | null;
+  outcome?: string | null;
+  nextDueDate?: string | null;
+  nextAction?: string | null;
+  /** Where the proof is. A place somebody could check, never a credential. */
+  evidence?: string | null;
+}
+
+export interface ConversationOutcome {
+  ok: boolean;
+  activityId: string | null;
+  reused: boolean;
+  leadId: string | null;
+  occurredOn: string | null;
+  nextDueDate: string | null;
+  error: string | null;
+}
+
+/**
+ * What happened to a draft.
+ *
+ * `sent` is a separate field from `status` and is false for everything except a
+ * confirmed send, because this is the exact place the mistake would be made.
+ */
+export interface DraftOutcome {
+  ok: boolean;
+  draftId: string | null;
+  status: 'draft' | 'copied' | 'sent' | 'not_found' | 'failed';
+  sent: boolean;
+  /** The activity a confirmed send produced. */
+  activityId: string | null;
+  sentOn: string | null;
+  error: string | null;
+}
+
 export type UndoStatus =
   | 'undone' | 'conflict' | 'nothing_to_undo' | 'not_found'
   | 'unknown_operation' | 'failed';
@@ -404,6 +496,46 @@ export interface Repository {
    * at the next cron tick.
    */
   drainSyncJobs?(): Promise<{ ran: boolean; succeeded: number; failed: number }>;
+
+  /* ------------------------------------------------------- the assistant --- */
+
+  /**
+   * Supabase adapter only: ask the assistant one question.
+   *
+   * The browser sends its own session, what was typed, and the records it is
+   * already showing. It holds no model key, so this is a request for an answer
+   * rather than the answer itself. Nothing is written by this call: what comes
+   * back is a proposal, and every write below is a separate, explicit act.
+   */
+  askAssistant?(input: AssistantRequest): Promise<AssistantAnswer>;
+  /**
+   * Supabase adapter only: save a contact, the meeting and the facts at once.
+   *
+   * One transaction, idempotent on the token. Absent on the local adapter,
+   * which has no transaction to offer and no server to ask.
+   */
+  captureContact?(input: CaptureInput): Promise<CaptureOutcome>;
+  /** Supabase adapter only: record contact that already happened. */
+  recordConversation?(input: ConversationInput): Promise<ConversationOutcome>;
+  /** Supabase adapter only: write or revise the one open draft for a channel. */
+  saveDraft?(leadId: string, channel: string | null, body: string): Promise<DraftOutcome>;
+  /** Supabase adapter only: note that a draft was copied. Deliberately not a send. */
+  markDraftCopied?(draftId: string): Promise<DraftOutcome>;
+  /**
+   * Supabase adapter only: the person confirming they sent it.
+   *
+   * The only path in the application that produces a sent draft, and it exists
+   * because somebody pressed a button that says so.
+   */
+  markDraftSent?(
+    draftId: string, token: string, sentOn: string, finalBody?: string | null,
+  ): Promise<DraftOutcome>;
+  /** Supabase adapter only: the drafts on file for one contact. */
+  loadDrafts?(leadId: string): Promise<MessageDraft[]>;
+  /** Supabase adapter only: what the assistant has recorded about one contact. */
+  loadFacts?(leadId: string): Promise<ExtractedFact[]>;
+  /** Supabase adapter only: what the assistant has cost, read from ai_usage. */
+  loadAiUsage?(days?: number): Promise<AiUsageSummary>;
 }
 
 /** A fresh empty dataset. Use this rather than writing the shape out by hand. */

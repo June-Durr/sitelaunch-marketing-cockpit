@@ -1,12 +1,92 @@
 # The AI drafting contract
 
 What an assistant inside the Cockpit is allowed to read, allowed to write, and
-required to refuse. Written before the feature exists, because the rules are the
-hard part and the chat window is not.
+required to refuse. Written before the feature existed, because the rules are
+the hard part and the chat window is not.
 
-Nothing described here is built yet. There is no AI chat in the Cockpit and no
-Gmail integration. This document says what the existing workflow has been made
-ready for, so that the thing built on top of it cannot quietly invent history.
+Most of it is now built. The sections below are the rules; this section is the
+state of the thing that obeys them, kept here rather than in a commit message
+because anybody reading the rules needs to know which ones are enforced by code
+today and which are still only agreed.
+
+## What is built
+
+**The panel.** An Ask button on every screen, opening a conversation beside the
+page. It knows which screen you are on and which contact is open, and says both
+in its header. It is absent entirely in browser-only mode, because there is no
+server there to hold a model key.
+
+**One model request per turn**, in one Edge Function, `supabase/functions/assistant`.
+It holds `OPENAI_API_KEY`, builds the prompt, asks once, checks the answer and
+records what it cost. It writes nothing except the usage row.
+
+**Every write goes through a button.** The model proposes; the person edits and
+presses Save. The four writes are `capture_contact`, `record_conversation`,
+`save_message_draft` and `mark_draft_sent`, all of them the same transactional,
+idempotent operations the rest of the app uses, all under row level security.
+There is no path from an answer to a record that does not pass through a person.
+
+**Provenance survives the trip.** The model has to say, per fact, whether the
+contact stated it, the person formed the impression, or it worked the fact out
+itself, and an inference has to quote the words it came from. The panel shows
+which is which, and the person can untick any of them before saving.
+
+**The checks are in code, not in this document.** The server drops a contact id
+that was not in the prompt, a date in the future where a past date was asked
+for, a day that is not a day, and a quote that is not in what the person wrote.
+What it dropped is shown in the panel rather than swallowed.
+
+**Cost is recorded from the first request**, per operation and per model, in
+`ai_usage`, including failed calls, because a failed call is still billed. The
+panel shows the last thirty days. There is no customer billing.
+
+## What is not built
+
+- **Voice input.** Section 7 describes what it will be. There is no microphone.
+- **Gmail.** Section 8 still describes the future.
+- **A History needs confirmation task.** Section 3's question is asked, and the
+  assistant saves what it is sure of, but no task is produced when the answer
+  does not arrive.
+- **Google Contacts or vCard import.** Nothing imports an address book, and
+  nothing claims a contact integration is connected.
+- **Facts reviewed after the fact.** `extracted_facts` carries `accepted_at` and
+  `rejected_at`, and today the decision is made before saving rather than in a
+  queue afterwards.
+
+## Which model, and why
+
+Model choice is server configuration, in `server/integrations/openai.ts`, and
+every part of it is overridable without a deploy:
+
+| Operation | Default | Why |
+|---|---|---|
+| capture | `gpt-6.1-sol` | Decides what gets written about a real person, including what is a fact and what is a guess |
+| draft | `gpt-6.1-sol` | The wording actually goes to a prospect, sometimes in Spanish |
+| brief | `gpt-6-luna` | Summarises rows the Cockpit already selected and handed over: no retrieval, no judgement, twenty times cheaper |
+
+`ASSISTANT_MODEL` replaces all three. `ASSISTANT_MODEL_CAPTURE`,
+`ASSISTANT_MODEL_DRAFT` and `ASSISTANT_MODEL_BRIEF` replace one each and win
+over the general one. Prices are a table in the same file, in millionths of a
+dollar per million tokens; a model with no price on file still gets a usage row
+with its real token counts, and the panel says the total is a floor rather than
+pretending the call was free.
+
+A realistic capture turn is about 2,500 tokens in and 400 out, which is a little
+under a cent. The split above is a judgement made before any live measurement,
+which is exactly why the environment variables exist.
+
+## Where the contact records come from
+
+The browser assembles the prompt out of the dataset it is already showing: the
+contact it matched, that contact's history, the open drafts, what is due, and a
+thin index of everybody. Matching is done by `src/lib/contactMatch.ts`, in plain
+code, never by the model, because matching a name to a record is string
+comparison and a language model does that approximately. One clear match is
+pinned; two plausible ones become a question with buttons.
+
+The honest limit is size. The index is a prompt, so it stops fitting somewhere
+in the low thousands of contacts. The tool-calling seam in the model adapter is
+where that goes next, and it is built and tested but unused.
 
 ---
 
@@ -143,3 +223,9 @@ certainly not yes.
 | Evidence has a source | `activity_events.evidence_source` |
 | Saving and syncing are different claims | `sync_jobs`, read as "Saved; calendar syncing" |
 | Unknown stays unknown | nulls are never defaulted to zero or to a guess |
+| A guess cannot become a fact | `extracted_facts.provenance`, NOT NULL with no default, plus `inferred_facts_show_their_source` |
+| Writing is not sending | `message_drafts.copied_at` and `sent_at` as separate columns, and `mark_draft_sent` as the only path to `sent` |
+| One answer to "did I send it?" | `message_drafts_one_open_per_channel`, one open draft per contact per channel |
+| A contact and their first meeting land together | `capture_contact`, one transaction, idempotent on a token held in `external_key` |
+| The model cannot name a contact that does not exist | the server checks every id against the ones that were in the prompt |
+| What a request cost is known | `ai_usage`, written server side, readable by its owner and writable by nobody in the browser |

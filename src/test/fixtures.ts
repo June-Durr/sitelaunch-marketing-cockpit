@@ -202,3 +202,26 @@ function addFixtureDays(day: string, days: number): string {
   date.setUTCDate(date.getUTCDate() + days);
   return date.toISOString().slice(0, 10);
 }
+
+/**
+ * The assistant half of the data context, switched off.
+ *
+ * Every screen test builds a DataContextValue by hand, and the assistant added
+ * nine more fields to it. Spread this in rather than repeating nine nulls four
+ * times: a tenth field added later then only has to be named here.
+ *
+ * Null is also the honest default for these tests. They render screens, not the
+ * assistant, and a test that handed them working functions would be claiming a
+ * model request it never makes.
+ */
+export const NO_ASSISTANT = {
+  askAssistant: null,
+  captureContact: null,
+  recordConversation: null,
+  saveDraft: null,
+  markDraftCopied: null,
+  markDraftSent: null,
+  loadDrafts: null,
+  loadFacts: null,
+  loadAiUsage: null,
+} as const;

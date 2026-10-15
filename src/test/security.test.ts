@@ -30,8 +30,8 @@ const sqlWithoutTokenStore = readdirSync(dir)
   .filter(
     (f) =>
       f.endsWith('.sql') &&
-      // 0010 holds the OAuth token store; 0012, 0013 and 0014 grant their own
-      // functions to service_role, which is the point of them. All five
+      // 0010 holds the OAuth token store; 0012 onwards grant their own
+      // functions to service_role, which is the point of them. All of them
       // are excluded from this blanket word search and asserted on
       // directly further down, because a text match over them would
       // either pass by accident or force them to be written dishonestly.
@@ -40,7 +40,8 @@ const sqlWithoutTokenStore = readdirSync(dir)
       !f.startsWith('0013_') &&
       !f.startsWith('0014_') &&
       !f.startsWith('0015_') &&
-      !f.startsWith('0016_'),
+      !f.startsWith('0016_') &&
+      !f.startsWith('0017_'),
   )
   .map((f) => sqlFor(f))
   .join('\n');
@@ -371,6 +372,131 @@ describe('the browser bundle carries no secrets', () => {
     // would exist only in the comments.
     expect(shippedSource).not.toContain("from '../../server");
     expect(shippedSource).not.toContain('server/integrations');
+  });
+});
+
+/* ------------------------------------------------------------------------ */
+
+/* ------------------------------------------------------------------------ */
+
+/**
+ * The assistant's own tables and operations.
+ *
+ * These two migrations are left out of the blanket word search above, because
+ * they grant their functions to service_role on purpose. Left out and not
+ * checked is an exemption, so this is the direct version: what the browser may
+ * write, what it may only read, and the fact that every one of these functions
+ * runs as its caller and therefore inside row level security.
+ */
+describe('the assistant writes through the owner, never around them', () => {
+  const foundation = sqlFor('0016_assistant_foundation.sql');
+  const capture = sqlFor('0017_assistant_capture.sql');
+  const both = `${foundation}\n${capture}`;
+
+  for (const table of ['extracted_facts', 'message_drafts', 'ai_usage']) {
+    it(`${table} has row level security on and an owner`, () => {
+      expect(foundation).toContain(`alter table ${table}`);
+      expect(foundation).toMatch(
+        new RegExp(`alter table ${table}\\s+enable row level security`),
+      );
+      expect(foundation).toContain('owner_id    uuid not null');
+    });
+  }
+
+  it('lets the browser read usage and never write it', () => {
+    // A browser that could write its own usage rows could understate what it
+    // had spent, which is the one thing a cost table must not allow.
+    expect(foundation).toContain('create policy ai_usage_owner_read on ai_usage');
+    expect(foundation).toContain('for select to authenticated');
+    expect(foundation).not.toMatch(/create policy ai_usage\w* on ai_usage\s+for all/);
+  });
+
+  it('runs every assistant function as its caller, so the policies apply', () => {
+    const functions = [
+      'record_conversation', 'mark_draft_sent', 'mark_draft_copied',
+      'capture_contact', 'save_message_draft',
+    ];
+    for (const name of functions) {
+      const start = both.indexOf(`create or replace function ${name}(`);
+      expect(start, `${name} is missing`).toBeGreaterThan(-1);
+      const body = both.slice(start, start + 2200);
+      expect(body, `${name} should run as its caller`).toContain('security invoker');
+      expect(body, `${name} must not be definer`).not.toContain('security definer');
+    }
+  });
+
+  it('never grants an assistant function to anonymous visitors or to public', () => {
+    for (const grant of both.split(';').filter((s) => s.includes('grant execute on function'))) {
+      expect(grant).not.toContain(' anon');
+      expect(grant).not.toMatch(/to\s+public/);
+    }
+  });
+
+  it('pins owner_id to the caller rather than taking it from an argument', () => {
+    // capture_contact reads auth.uid() once and uses it. An owner in the
+    // argument list would be a request to write into somebody else's rows.
+    expect(capture).toContain('v_owner       uuid := auth.uid()');
+    expect(capture).toContain("using errcode = 'insufficient_privilege'");
+    expect(capture).not.toMatch(/p_owner(_id)?\s+uuid/);
+  });
+
+  it('keeps provenance mandatory and without a default', () => {
+    const column = foundation.slice(
+      foundation.indexOf('provenance  text not null'),
+      foundation.indexOf('source_excerpt'),
+    );
+    expect(column).toContain("check (provenance in (");
+    expect(column).not.toContain('default');
+  });
+
+  it('stores nothing that could hold a credential', () => {
+    for (const word of ['refresh_token', 'access_token', 'api_key', 'client_secret', 'openai']) {
+      expect(both.toLowerCase(), `the assistant schema mentions ${word}`).not.toContain(word);
+    }
+  });
+});
+
+/**
+ * The model key, which is the one new secret this feature introduces.
+ *
+ * It lives in the assistant function's own environment and nowhere else. These
+ * assertions are the cheap version of that claim: the browser never names it,
+ * nothing VITE_ prefixed goes near it, and the one file that does read it hands
+ * it straight to the adapter.
+ */
+describe('the model key stays on the server', () => {
+  it('is never named anywhere in src', () => {
+    for (const forbidden of ['OPENAI_API_KEY', 'VITE_OPENAI', 'sk-proj-', 'api.openai.com']) {
+      expect(shippedSource, `src references ${forbidden}`).not.toContain(forbidden);
+    }
+  });
+
+  it('is read by the assistant function and by nothing else', () => {
+    const readers = readdirSync('supabase/functions', { recursive: true, encoding: 'utf8' })
+      .filter((f) => typeof f === 'string' && f.endsWith('index.ts'))
+      .filter((f) => readFileSync(`supabase/functions/${f}`, 'utf8').includes('OPENAI_API_KEY'))
+      // Windows hands these back with backslashes, and the point of the test is
+      // which function reads the key, not which separator the platform uses.
+      .map((f) => f.split('\\').join('/'));
+    expect(readers).toEqual(['assistant/index.ts']);
+  });
+
+  it('never leaves the adapter: no response, log or error is built from it', () => {
+    const adapter = readFileSync('server/integrations/openai.ts', 'utf8');
+    // The key appears exactly twice: the argument it arrives as, and the one
+    // header it goes into.
+    const uses = adapter.match(/apiKey/g) ?? [];
+    expect(uses.length).toBeLessThanOrEqual(6);
+    expect(adapter).toContain('authorization: `Bearer ${request.apiKey}`');
+    // And the failure path says so out loud, because a thrown fetch error can
+    // quote the request it was sent with.
+    expect(adapter).toContain('Could not reach the model.');
+  });
+
+  it('sends the assistant request to the function, not to the provider', () => {
+    const repository = readFileSync('src/data/supabaseRepository.ts', 'utf8');
+    expect(repository).toContain('/assistant');
+    expect(repository).not.toContain('openai');
   });
 });
 

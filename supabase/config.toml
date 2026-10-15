@@ -61,3 +61,13 @@ verify_jwt = false
 # JWT checking would reject the first before the body ran.
 [functions.run-sync-jobs]
 verify_jwt = false
+
+# The assistant.
+#
+# One caller only: a signed in person asking a question. requireUser accepts a
+# Bearer token and refuses the cron secret outright, because there is nothing
+# here for a scheduler to ask. Platform JWT checking is left off for the same
+# reason as the rest: the anon key is itself a valid JWT, so the platform check
+# would not establish who is asking, and requireUser does.
+[functions.assistant]
+verify_jwt = false

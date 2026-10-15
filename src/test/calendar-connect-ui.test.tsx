@@ -27,6 +27,7 @@ import {
   type CalendarDisconnectOutcome, type CalendarOAuthStart, type CalendarStatus,
   type CalendarSyncOutcome,
 } from '../data/repository';
+import { NO_ASSISTANT } from './fixtures';
 
 /* ------------------------------------------------------------- fixtures -- */
 
@@ -119,6 +120,7 @@ function supabaseContext(options: {
     loadRecentlyDeleted: null,
     loadSyncPending: null,
     drainSyncJobs: null,
+    ...NO_ASSISTANT,
     startCalendarOAuth:
       options.start
       ?? (async (): Promise<CalendarOAuthStart> => ({

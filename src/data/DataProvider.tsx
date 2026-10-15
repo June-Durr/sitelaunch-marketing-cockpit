@@ -173,6 +173,49 @@ export function DataProvider({ children }: { children: ReactNode }) {
         : null,
       loadSyncPending: repo.loadSyncPending ? () => repo.loadSyncPending!() : null,
       drainSyncJobs: repo.drainSyncJobs ? () => repo.drainSyncJobs!() : null,
+
+      /*
+       * The assistant.
+       *
+       * Asking refreshes nothing, because asking changes nothing. The four
+       * writes refresh afterwards, because each one changes rows the screens
+       * are showing: a new contact belongs in the Pipeline the moment it
+       * exists, and a recorded touch moves a follow-up date.
+       */
+      askAssistant: repo.askAssistant ? (input) => repo.askAssistant!(input) : null,
+      captureContact: repo.captureContact
+        ? async (input) => {
+            const outcome = await repo.captureContact!(input);
+            if (outcome.ok) await refresh();
+            return outcome;
+          }
+        : null,
+      recordConversation: repo.recordConversation
+        ? async (input) => {
+            const outcome = await repo.recordConversation!(input);
+            if (outcome.ok) await refresh();
+            return outcome;
+          }
+        : null,
+      /* No refresh. A draft is not part of the dataset any screen reads. */
+      saveDraft: repo.saveDraft
+        ? (leadId, channel, body) => repo.saveDraft!(leadId, channel, body)
+        : null,
+      markDraftCopied: repo.markDraftCopied
+        ? (draftId) => repo.markDraftCopied!(draftId)
+        : null,
+      markDraftSent: repo.markDraftSent
+        ? async (draftId, token, sentOn, finalBody) => {
+            const outcome = await repo.markDraftSent!(draftId, token, sentOn, finalBody);
+            // A confirmed send writes an activity and moves the follow-up, so
+            // the screens behind the panel are now out of date.
+            if (outcome.sent) await refresh();
+            return outcome;
+          }
+        : null,
+      loadDrafts: repo.loadDrafts ? (leadId) => repo.loadDrafts!(leadId) : null,
+      loadFacts: repo.loadFacts ? (leadId) => repo.loadFacts!(leadId) : null,
+      loadAiUsage: repo.loadAiUsage ? (days) => repo.loadAiUsage!(days) : null,
     }),
     [data, error, loading, refresh, repo],
   );
