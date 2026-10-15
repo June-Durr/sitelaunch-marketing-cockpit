@@ -196,7 +196,7 @@ function harness(options: {
     };
     value.loadDrafts = async () => [];
     value.loadAiUsage = async () => ({
-      requests: 3, costMicros: 24_000, unpriced: 0, failures: 0, since: '2026-09-14',
+      requests: 3, costMicros: 24_000, unknownCost: 0, failures: 0, since: '2026-09-14',
     });
   }
 
@@ -623,6 +623,27 @@ describe('when it cannot work', () => {
     await waitFor(() => expect(screen.getByText(/no model key yet/)).toBeTruthy());
   });
 
+  it('says the account is out of credits as a standing state, not a failed turn', async () => {
+    // What the real API answers when the balance is exhausted. No retry fixes
+    // it, so repeating "that did not get through" would send somebody
+    // debugging instead of adding credit.
+    harness({
+      reply: {
+        status: 'no_credit',
+        proposal: null,
+        model: 'gpt-6.1-sol',
+        costMicros: null,
+        priced: false,
+        error:
+          'The model account has no credits left, so nothing can be asked yet. '
+          + 'Everything else is set up and working; add credit to the OpenAI account.',
+      },
+    });
+    await ask('anything at all');
+    await waitFor(() => expect(screen.getByText(/no credits left/)).toBeTruthy());
+    expect(screen.getByText('The model account is out of credits, so I cannot answer.')).toBeTruthy();
+  });
+
   it('shows a failed turn as a failure, with nothing proposed', async () => {
     harness({
       reply: {
@@ -635,10 +656,24 @@ describe('when it cannot work', () => {
     expect(screen.queryByText('Save this contact')).toBeNull();
   });
 
-  it('reports what it has spent, and does not call a failure free', async () => {
+  it('reports what it has spent', async () => {
     harness({});
     fireEvent.click(screen.getByRole('button', { name: 'Open the assistant' }));
     await waitFor(() => expect(screen.getByText(/3 requests in the last 30/)).toBeTruthy());
     expect(screen.getByText(/\$0\.02/)).toBeTruthy();
+  });
+
+  it('calls the total a floor when some costs are not known', async () => {
+    const { value } = harness({});
+    value.loadAiUsage = async () => ({
+      requests: 4, costMicros: 24_000, unknownCost: 1, failures: 1, since: '2026-09-14',
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Open the assistant' }));
+
+    // "at least", because one of those requests was billed and reported nothing
+    // back, and adding it in as zero would understate the bill.
+    await waitFor(() => expect(screen.getByText(/at least/)).toBeTruthy());
+    expect(screen.getByText(/1 whose cost is not known/)).toBeTruthy();
+    expect(screen.getByText(/1 that failed and were still billed/)).toBeTruthy();
   });
 });

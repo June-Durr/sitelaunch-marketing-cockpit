@@ -67,13 +67,31 @@ every part of it is overridable without a deploy:
 `ASSISTANT_MODEL` replaces all three. `ASSISTANT_MODEL_CAPTURE`,
 `ASSISTANT_MODEL_DRAFT` and `ASSISTANT_MODEL_BRIEF` replace one each and win
 over the general one. Prices are a table in the same file, in millionths of a
-dollar per million tokens; a model with no price on file still gets a usage row
-with its real token counts, and the panel says the total is a floor rather than
-pretending the call was free.
+dollar per million tokens, taken from the published list on 2026-10-14.
 
-A realistic capture turn is about 2,500 tokens in and 400 out, which is a little
-under a cent. The split above is a judgement made before any live measurement,
-which is exactly why the environment variables exist.
+### What a turn costs, and what is actually known about that
+
+A cost is recorded three ways, and they are not interchangeable:
+
+- **Known.** The provider reported usage and the model is in the price table.
+  `cost_micros` holds the arithmetic.
+- **No price on file.** Usage is known, the model is not in the table. Tokens
+  are recorded, `cost_micros` is null, and `note` says why. Not a failure.
+- **No usage reported.** The request failed on the way back, or never got far
+  enough to be measured. Tokens and cost are all null and `error` says what
+  happened. This is the case worth being careful about: a request that times out
+  after the model has generated tokens **is billed**, and a zero in that row
+  would be a claim that it was free.
+
+Which is why `ai_usage` holds nulls rather than zeros, and why the panel says
+"at least" in front of the total whenever any row's cost is unknown. Migration
+0018 enforces the other half: a row may only leave its cost unknown if it says
+why.
+
+The model split above is a judgement made before any live measurement, which is
+exactly why the environment variables exist. Any figure for what a turn costs
+should come from `ai_usage` and the current published rates, not from an
+estimate written here.
 
 ## Where the contact records come from
 
@@ -229,3 +247,4 @@ certainly not yes.
 | A contact and their first meeting land together | `capture_contact`, one transaction, idempotent on a token held in `external_key` |
 | The model cannot name a contact that does not exist | the server checks every id against the ones that were in the prompt |
 | What a request cost is known | `ai_usage`, written server side, readable by its owner and writable by nobody in the browser |
+| A cost nobody knows is not zero | nullable `cost_micros` with `unknown_cost_says_why`, and "at least" in front of a total that has one |

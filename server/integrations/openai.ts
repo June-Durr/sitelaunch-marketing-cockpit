@@ -155,10 +155,11 @@ export interface ModelResult {
   /** Set when the model declined. Does not follow the schema, so check it first. */
   refusal: string | null;
   functionCalls: ModelFunctionCall[];
-  usage: ModelUsage;
-  costMicros: number;
-  /** False when the model is not in the price table, so the zero is not read as free. */
-  priced: boolean;
+  /** Null when the provider sent no usage figures at all. Not zero. */
+  usage: ModelUsage | null;
+  /** Null when the cost is not known. See basis for which kind of not known. */
+  costMicros: number | null;
+  basis: CostBasis;
   /** Set when the answer was cut short, with the provider's reason. */
   truncated: string | null;
 }
@@ -166,6 +167,13 @@ export interface ModelResult {
 /** A request that failed, with nothing in it that could have come from a key. */
 export class ModelError extends Error {
   readonly status: number | null;
+  /**
+   * What the failed request used, when the provider said.
+   *
+   * Null is the common case and is the whole point of this being nullable: a
+   * request that timed out after the model had generated tokens was billed, and
+   * recording zero for it would understate the bill. Null means not known.
+   */
   readonly usage: ModelUsage | null;
 
   constructor(message: string, status: number | null = null, usage: ModelUsage | null = null) {
@@ -179,16 +187,51 @@ export class ModelError extends Error {
 export const EMPTY_USAGE: ModelUsage = { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 };
 
 /**
- * What one call cost, in millionths of a dollar.
+ * Out of credit, which is a billing state rather than a failed question.
+ *
+ * Worth telling apart because the two call for different things from the
+ * person reading the screen. A rate limit or a bad gateway means try again; an
+ * exhausted balance means nothing will work until somebody adds credit, and
+ * saying "that did not get through" over and over instead is how an afternoon
+ * gets lost. Found by running the real thing: the provider answers 429 with
+ * insufficient_quota and no usage figures at all.
+ */
+export function isOutOfCredit(error: unknown): boolean {
+  if (!(error instanceof ModelError)) return false;
+  return error.status === 429
+    && /insufficient_quota|credit_balance_exhausted|no credits remaining/i.test(error.message);
+}
+
+/**
+ * Why a cost is or is not known.
+ *
+ *   priced    the provider reported usage and the model has a price on file
+ *   no_price  usage is known, the model is not in the price table
+ *   no_usage  the provider reported nothing, so nothing can be worked out
+ *
+ * The caller stores the reason, because "we do not know" is only an acceptable
+ * answer in a cost table if it comes with which kind of not knowing it was.
+ */
+export type CostBasis = 'priced' | 'no_price' | 'no_usage';
+
+/**
+ * What one call cost, in millionths of a dollar, or nothing if that is unknown.
  *
  * Cached tokens are counted inside inputTokens by the provider, so they are
  * taken out and charged at their own rate rather than counted twice. Each of
  * the three lines is rounded on its own, which keeps the arithmetic the same
  * whichever order the rows are summed in later.
+ *
+ * It returns null rather than zero for both kinds of unknown. A failed request
+ * is still billed, and a zero in a cost table is a claim that it was free.
  */
-export function priceUsage(model: string, usage: ModelUsage): { costMicros: number; priced: boolean } {
+export function priceUsage(
+  model: string,
+  usage: ModelUsage | null,
+): { costMicros: number | null; basis: CostBasis } {
+  if (!usage) return { costMicros: null, basis: 'no_usage' };
   const price = MODEL_PRICES[model];
-  if (!price) return { costMicros: 0, priced: false };
+  if (!price) return { costMicros: null, basis: 'no_price' };
 
   const cached = Math.min(Math.max(usage.cachedInputTokens, 0), Math.max(usage.inputTokens, 0));
   const fresh = Math.max(usage.inputTokens, 0) - cached;
@@ -198,7 +241,7 @@ export function priceUsage(model: string, usage: ModelUsage): { costMicros: numb
     Math.round((cached * price.cachedInput) / 1_000_000) +
     Math.round((Math.max(usage.outputTokens, 0) * price.output) / 1_000_000);
 
-  return { costMicros: micros, priced: true };
+  return { costMicros: micros, basis: 'priced' };
 }
 
 /* ------------------------------------------------------------- the parsing --- */
@@ -215,9 +258,18 @@ function asCount(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.round(value) : 0;
 }
 
-/** The token counts, read defensively: a missing usage object is zero, not a crash. */
-export function readUsage(body: unknown): ModelUsage {
-  const usage = asRecord(asRecord(body).usage);
+/**
+ * The token counts, or null when the provider did not report any.
+ *
+ * The distinction is the reason this returns null rather than zeros. A response
+ * with usage and zeros in it would be strange; a response with no usage object
+ * means the request did not get far enough to be measured, or failed on the way
+ * back. Those are different rows in the cost table.
+ */
+export function readUsage(body: unknown): ModelUsage | null {
+  const root = asRecord(body);
+  if (root.usage === null || typeof root.usage !== 'object') return null;
+  const usage = asRecord(root.usage);
   return {
     inputTokens: asCount(usage.input_tokens),
     cachedInputTokens: asCount(asRecord(usage.input_tokens_details).cached_tokens),
@@ -262,7 +314,7 @@ export function readResult(model: string, body: unknown): Omit<ModelResult, 'mod
   }
 
   const usage = readUsage(root);
-  const { costMicros, priced } = priceUsage(model, usage);
+  const { costMicros, basis } = priceUsage(model, usage);
 
   // 'incomplete' means the answer stopped early. Reported rather than parsed as
   // though it were whole, because half a JSON object is not a proposal.
@@ -279,7 +331,7 @@ export function readResult(model: string, body: unknown): Omit<ModelResult, 'mod
     functionCalls: calls,
     usage,
     costMicros,
-    priced,
+    basis,
     truncated,
   };
 }

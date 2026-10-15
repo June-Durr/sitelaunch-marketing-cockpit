@@ -132,12 +132,14 @@ export const PROPOSAL_FIELDS = [
 /**
  * What came back from one turn.
  *
- * 'no_model_key' is a configuration answer, not a failure, and the panel says so
- * in those words: the feature is built and waiting on a secret.
+ * 'no_model_key' and 'no_credit' are configuration answers rather than
+ * failures, and the panel says so in those words: the feature is built and
+ * waiting on a secret, or on a balance. Neither is something a retry fixes, so
+ * neither is dressed up as a turn that went wrong.
  */
 export interface AssistantAnswer {
   status:
-    | 'ok' | 'refused' | 'failed' | 'no_model_key' | 'not_signed_in'
+    | 'ok' | 'refused' | 'failed' | 'no_model_key' | 'no_credit' | 'not_signed_in'
     | 'not_configured' | 'bad_request' | 'unreachable' | 'unavailable';
   proposal: AssistantProposal | null;
   model: string | null;
@@ -155,12 +157,18 @@ export interface AssistantRequest {
   context: AssistantContext;
 }
 
-/** What the Cockpit has spent on the assistant. Read from ai_usage by its owner. */
+/**
+ * What the Cockpit has spent on the assistant. Read from ai_usage by its owner.
+ *
+ * costMicros adds up the requests whose cost is known. unknownCost counts the
+ * ones where it is not, which is what makes the total a floor rather than a
+ * total: a request that failed on the way back was billed and reported nothing.
+ */
 export interface AiUsageSummary {
   requests: number;
   costMicros: number;
-  /** Calls whose model had no price on file, so the total is a floor, not a total. */
-  unpriced: number;
+  /** Requests with no cost on file, so the total above is a floor. */
+  unknownCost: number;
   failures: number;
   since: string;
 }

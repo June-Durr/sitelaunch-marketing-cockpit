@@ -253,9 +253,14 @@ export function AssistantPanel() {
             {usage && usage.requests > 0 ? (
               <>
                 {usage.requests} {usage.requests === 1 ? 'request' : 'requests'} in the last 30
-                days, {formatCost(usage.costMicros)}
-                {usage.unpriced > 0 ? ' and some calls on a model with no price on file' : ''}
-                {usage.failures > 0 ? `, ${usage.failures} of them failed and were still billed` : ''}
+                days, {usage.unknownCost > 0 ? 'at least ' : ''}
+                {formatCost(usage.costMicros)}
+                {usage.unknownCost > 0
+                  ? `, with ${usage.unknownCost} whose cost is not known`
+                  : ''}
+                {usage.failures > 0
+                  ? `, and ${usage.failures} that failed and were still billed`
+                  : ''}
               </>
             ) : (
               'Nothing spent yet.'

@@ -439,6 +439,64 @@ describe('what the assistant costs is recorded from the start', () => {
     expect(usage.cost_micros).toBe('4100');
   });
 
+  it('records a cost of not known, which is not a cost of zero', async () => {
+    // The case this exists for: a request that timed out after the model had
+    // already worked. It was billed, and the response that would have carried
+    // the figures never arrived.
+    await rows(
+      `insert into ai_usage (owner_id, operation, model, input_tokens, output_tokens,
+                             cost_micros, error)
+       values ($1, 'capture', 'gpt-6.1-sol', null, null, null, 'the model did not answer in time')`,
+      [USER_A],
+    );
+    const [usage] = await rows<Record<string, unknown>>(
+      'select input_tokens, output_tokens, cost_micros, error from ai_usage',
+    );
+    expect(usage.cost_micros).toBeNull();
+    expect(usage.input_tokens).toBeNull();
+    expect(usage.error).toBe('the model did not answer in time');
+  });
+
+  it('separates a model with no price from a request that failed', async () => {
+    await rows(
+      `insert into ai_usage (owner_id, operation, model, input_tokens, output_tokens,
+                             cost_micros, note)
+       values ($1, 'brief', 'some-new-model', 900, 120, null,
+               'no price on file for some-new-model')`,
+      [USER_A],
+    );
+    const [usage] = await rows<Record<string, unknown>>(
+      'select cost_micros, note, error, input_tokens::text from ai_usage',
+    );
+    // Tokens are known, the price is not, and this is not a failure.
+    expect(usage.cost_micros).toBeNull();
+    expect(usage.input_tokens).toBe('900');
+    expect(usage.error).toBeNull();
+    expect(usage.note).toContain('no price on file');
+  });
+
+  it('refuses an unknown cost that does not say why', async () => {
+    // Otherwise null becomes the lazy default and the table is no more use
+    // than one full of zeros.
+    await expect(
+      rows(
+        `insert into ai_usage (owner_id, operation, model, cost_micros)
+         values ($1, 'capture', 'gpt-6.1-sol', null)`,
+        [USER_A],
+      ),
+    ).rejects.toThrow(/unknown_cost_says_why/);
+  });
+
+  it('still refuses a negative cost', async () => {
+    await expect(
+      rows(
+        `insert into ai_usage (owner_id, operation, model, cost_micros)
+         values ($1, 'capture', 'gpt-6.1-sol', -5)`,
+        [USER_A],
+      ),
+    ).rejects.toThrow();
+  });
+
   it('cannot be written from a browser, only read', async () => {
     // A browser that could write usage rows could understate what it spent.
     await expect(

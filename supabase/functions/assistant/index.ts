@@ -39,7 +39,8 @@ import { createClient } from 'jsr:@supabase/supabase-js@2';
 import { sanitizeError, safeLog } from '../../../server/integrations/sanitize.ts';
 import { requireUser } from '../../../server/integrations/requestAuth.ts';
 import {
-  askModel, chooseModel, ModelError, priceUsage, type AssistantOperation, type ModelUsage,
+  askModel, chooseModel, isOutOfCredit, ModelError, priceUsage,
+  type AssistantOperation, type CostBasis, type ModelUsage,
 } from '../../../server/integrations/openai.ts';
 import {
   buildInput, buildInstructions, REPLY_SCHEMA, type AssistantContext, type DraftBrief,
@@ -50,6 +51,25 @@ import { readProposal, unparsableProposal } from '../../../server/integrations/a
 function env(name: string): string | null {
   const value = Deno.env.get(name);
   return value === undefined || value.trim() === '' ? null : value;
+}
+
+/**
+ * The model key, under either spelling of its name.
+ *
+ * The documented name is OPENAI_API_KEY. The dashboard will accept
+ * OPENAI-API-KEY, hyphens and all, and somebody typing a secret name by hand
+ * reaches for the hyphen about as often as the underscore. A key that is set
+ * and invisible to the function looks exactly like a feature that does not
+ * work, so both names are read and the one that answered is logged by name.
+ *
+ * The value is never logged, returned or interpolated into anything.
+ */
+function modelKey(): { key: string; from: string } | null {
+  for (const name of ['OPENAI_API_KEY', 'OPENAI-API-KEY']) {
+    const key = env(name);
+    if (key) return { key, from: name };
+  }
+  return null;
 }
 
 const CORS = {
@@ -228,25 +248,39 @@ const OPERATIONS: AssistantOperation[] = ['capture', 'brief', 'draft'];
 
 /* ------------------------------------------------------------- the handler --- */
 
-/** The usage row. Written for failures too, because a failed call is still billed. */
+/**
+ * The usage row. Written for failures too, because a failed call is still billed.
+ *
+ * Nulls where something is not known, never zeros. A request that failed on the
+ * way back was charged and reported nothing, and a zero in this table would be
+ * a claim that it was free. Migration 0018 makes the three numbers nullable for
+ * exactly this, and requires a reason beside any unknown cost.
+ */
 async function recordUsage(
   client: ReturnType<typeof createClient> | null,
   ownerId: string,
   operation: string,
   model: string,
-  usage: ModelUsage,
-  costMicros: number,
+  usage: ModelUsage | null,
+  costMicros: number | null,
+  basis: CostBasis,
   error: string | null,
 ): Promise<void> {
   if (!client) return;
+  const note = basis === 'no_price'
+    ? `no price on file for ${model}, so this request is counted but not costed`
+    : basis === 'no_usage' && error === null
+      ? 'the provider reported no usage figures for this request'
+      : null;
   try {
     await client.from('ai_usage').insert({
       owner_id: ownerId,
       operation,
       model,
-      input_tokens: usage.inputTokens,
-      output_tokens: usage.outputTokens,
+      input_tokens: usage ? usage.inputTokens : null,
+      output_tokens: usage ? usage.outputTokens : null,
       cost_micros: costMicros,
+      note,
       error,
     });
   } catch (problem) {
@@ -308,12 +342,12 @@ Deno.serve(async (request: Request): Promise<Response> => {
   // malformed history cannot lose it.
   const conversation = [...turns, { role: 'user' as const, content: message }];
 
-  const apiKey = env('OPENAI_API_KEY');
+  const configured = modelKey();
   const service = createClient(supabaseUrl, serviceRoleKey, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
 
-  if (!apiKey) {
+  if (!configured) {
     return json({
       status: 'no_model_key',
       error:
@@ -326,7 +360,7 @@ Deno.serve(async (request: Request): Promise<Response> => {
 
   try {
     const result = await askModel({
-      apiKey,
+      apiKey: configured.key,
       model,
       instructions: buildInstructions(context),
       input: buildInput(context, conversation),
@@ -337,7 +371,7 @@ Deno.serve(async (request: Request): Promise<Response> => {
 
     await recordUsage(
       service, ownerId, operation, result.model, result.usage, result.costMicros,
-      result.priced ? null : 'no price on file for this model, so the cost is not counted',
+      result.basis, null,
     );
 
     if (result.refusal) {
@@ -345,7 +379,7 @@ Deno.serve(async (request: Request): Promise<Response> => {
         status: 'refused',
         model: result.model,
         costMicros: result.costMicros,
-        priced: result.priced,
+        priced: result.basis === 'priced',
         proposal: unparsableProposal(result.refusal),
       });
     }
@@ -353,27 +387,45 @@ Deno.serve(async (request: Request): Promise<Response> => {
     const proposal = readProposal(result.text, context, message) ?? unparsableProposal(result.text);
 
     safeLog(
-      `assistant: ${operation} ${result.model}`,
-      `in=${result.usage.inputTokens} out=${result.usage.outputTokens} `
-      + `cost=${result.costMicros} intent=${proposal.intent}`,
+      `assistant: ${operation} ${result.model} key=${configured.from}`,
+      `in=${result.usage?.inputTokens ?? 'unknown'} `
+      + `out=${result.usage?.outputTokens ?? 'unknown'} `
+      + `cost=${result.costMicros ?? 'unknown'} basis=${result.basis} `
+      + `intent=${proposal.intent}`,
     );
 
     return json({
       status: 'ok',
       model: result.model,
       costMicros: result.costMicros,
-      priced: result.priced,
+      priced: result.basis === 'priced',
       proposal,
     });
   } catch (error) {
     const summary = error instanceof ModelError ? error.message : sanitizeError(error);
-    const usage = error instanceof ModelError && error.usage
-      ? error.usage
-      : { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 };
-    const { costMicros } = priceUsage(model, usage);
+    // Null, not zeros, when the provider told us nothing. See recordUsage.
+    const usage = error instanceof ModelError ? error.usage : null;
+    const { costMicros, basis } = priceUsage(model, usage);
 
-    await recordUsage(service, ownerId, operation, model, usage, costMicros, summary);
+    await recordUsage(service, ownerId, operation, model, usage, costMicros, basis, summary);
     safeLog('assistant: request failed', summary);
+
+    /*
+     * An exhausted balance is configuration, like a missing key, and the panel
+     * shows it as a standing notice rather than as a turn that went wrong.
+     * Repeating "that did not get through" for something no retry can fix is
+     * the difference between a person adding credit and a person debugging.
+     */
+    if (isOutOfCredit(error)) {
+      return json({
+        status: 'no_credit',
+        model,
+        error:
+          'The model account has no credits left, so nothing can be asked yet. '
+          + 'Everything else is set up and working; add credit to the OpenAI '
+          + 'account and this starts answering with no further changes.',
+      }, 503);
+    }
 
     return json({ status: 'failed', model, error: summary }, 502);
   }

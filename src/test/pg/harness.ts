@@ -52,6 +52,7 @@ export const MIGRATION_FILES = [
   '0015_undo_payload_fix.sql',
   '0016_assistant_foundation.sql',
   '0017_assistant_capture.sql',
+  '0018_usage_can_be_unknown.sql',
 ];
 
 export const USER_A = '11111111-1111-1111-1111-111111111111';

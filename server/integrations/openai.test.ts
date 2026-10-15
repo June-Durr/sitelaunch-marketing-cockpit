@@ -9,8 +9,8 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
-  askModel, chooseModel, MODEL_PRICES, ModelError, OPERATION_MODELS, priceUsage,
-  readError, readResult, readUsage, RESPONSES_URL, type ModelUsage,
+  askModel, chooseModel, isOutOfCredit, MODEL_PRICES, ModelError, OPERATION_MODELS,
+  priceUsage, readError, readResult, readUsage, RESPONSES_URL, type ModelUsage,
 } from './openai.ts';
 
 const KEY = 'sk-test-not-a-real-key-0000';
@@ -79,12 +79,12 @@ describe('choosing a model', () => {
 describe('pricing one call', () => {
   it('charges input and output at the published rates', () => {
     // gpt-6.1-sol: $2.00 per million in, $10.00 per million out.
-    const { costMicros, priced } = priceUsage('gpt-6.1-sol', {
+    const { costMicros, basis } = priceUsage('gpt-6.1-sol', {
       inputTokens: 1_000_000,
       cachedInputTokens: 0,
       outputTokens: 1_000_000,
     });
-    expect(priced).toBe(true);
+    expect(basis).toBe('priced');
     expect(costMicros).toBe(12_000_000);
   });
 
@@ -116,11 +116,18 @@ describe('pricing one call', () => {
   });
 
   it('says a model has no price rather than calling it free', () => {
-    const { costMicros, priced } = priceUsage('some-model-nobody-priced', {
+    const { costMicros, basis } = priceUsage('some-model-nobody-priced', {
       inputTokens: 5000, cachedInputTokens: 0, outputTokens: 5000,
     });
-    expect(costMicros).toBe(0);
-    expect(priced).toBe(false);
+    // Null, not zero. Zero in a cost table is a claim that it was free.
+    expect(costMicros).toBeNull();
+    expect(basis).toBe('no_price');
+  });
+
+  it('says a cost is unknown when the provider reported no usage at all', () => {
+    const { costMicros, basis } = priceUsage('gpt-6.1-sol', null);
+    expect(costMicros).toBeNull();
+    expect(basis).toBe('no_usage');
   });
 
   it('treats negative counts as zero rather than as a refund', () => {
@@ -141,9 +148,17 @@ describe('reading usage off a response', () => {
     })).toEqual({ inputTokens: 900, cachedInputTokens: 400, outputTokens: 120 });
   });
 
-  it('reports zeros rather than throwing when usage is missing', () => {
-    expect(readUsage({})).toEqual({ inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 });
-    expect(readUsage(null)).toEqual({ inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 });
+  it('reports nothing, rather than zeros, when there is no usage object', () => {
+    // A request that was never measured is not a request that used nothing.
+    expect(readUsage({})).toBeNull();
+    expect(readUsage(null)).toBeNull();
+    expect(readUsage({ usage: null })).toBeNull();
+  });
+
+  it('reports real zeros when the provider actually sent zeros', () => {
+    expect(readUsage({ usage: { input_tokens: 0, output_tokens: 0 } })).toEqual({
+      inputTokens: 0, cachedInputTokens: 0, outputTokens: 0,
+    });
   });
 });
 
@@ -220,6 +235,49 @@ describe('the error line', () => {
   it('caps a message that tries to quote the whole request back', () => {
     const line = readError(400, { error: { message: 'x'.repeat(5000) } });
     expect(line.length).toBeLessThan(400);
+  });
+});
+
+describe('telling an empty balance apart from a failure', () => {
+  /** The exact answer the real API gave on 2026-10-15, with nothing added. */
+  const REAL = {
+    error: {
+      message:
+        'You have no credits remaining. Add credits to continue using the API at '
+        + 'https://platform.openai.com/settings/organization/billing/.',
+      type: 'insufficient_quota',
+      code: 'credit_balance_exhausted',
+    },
+  };
+
+  it('recognises it from what the provider actually sends', async () => {
+    const fetchImpl = vi.fn(async (_url: string, _init: RequestInit) => answer(REAL, 429));
+    const error = await askModel({
+      apiKey: KEY, model: 'gpt-6.1-sol', instructions: 'x',
+      input: [{ role: 'user', content: 'y' }],
+    }, fetchImpl).catch((e: unknown) => e);
+
+    expect(isOutOfCredit(error)).toBe(true);
+    // And no usage came with it, so the cost is unknown rather than zero.
+    expect((error as ModelError).usage).toBeNull();
+  });
+
+  it('does not mistake an ordinary rate limit for an empty balance', async () => {
+    const fetchImpl = vi.fn(async (_url: string, _init: RequestInit) => answer({
+      error: { message: 'Rate limit reached for requests', type: 'rate_limit_error' },
+    }, 429));
+    const error = await askModel({
+      apiKey: KEY, model: 'gpt-6.1-sol', instructions: 'x',
+      input: [{ role: 'user', content: 'y' }],
+    }, fetchImpl).catch((e: unknown) => e);
+
+    // A retry fixes this one, so it must not be reported as configuration.
+    expect(isOutOfCredit(error)).toBe(false);
+  });
+
+  it('is false for anything that is not a model error', () => {
+    expect(isOutOfCredit(new Error('no credits remaining'))).toBe(false);
+    expect(isOutOfCredit(null)).toBe(false);
   });
 });
 
@@ -310,9 +368,40 @@ describe('asking the model', () => {
     }, fetchImpl);
 
     expect(result.text).toBe('{"intent":"answer"}');
-    expect(result.usage.inputTokens).toBe(2000);
+    expect(result.usage?.inputTokens).toBe(2000);
     expect(result.costMicros).toBe(2000 * 2 + 300 * 10);
-    expect(result.priced).toBe(true);
+    expect(result.basis).toBe('priced');
+  });
+
+  it('comes back with an unknown cost when a success carries no usage', async () => {
+    const fetchImpl = vi.fn(async (_url: string, _init: RequestInit) => answer({
+      model: 'gpt-6.1-sol',
+      status: 'completed',
+      output: [{ type: 'message', content: [{ type: 'output_text', text: '{}' }] }],
+    }));
+    const result = await askModel({
+      apiKey: KEY, model: 'gpt-6.1-sol', instructions: 'x',
+      input: [{ role: 'user', content: 'y' }],
+    }, fetchImpl);
+
+    expect(result.usage).toBeNull();
+    expect(result.costMicros).toBeNull();
+    expect(result.basis).toBe('no_usage');
+  });
+
+  it('carries no usage on a failure the provider said nothing about', async () => {
+    const fetchImpl = vi.fn(async (_url: string, _init: RequestInit) => answer({
+      error: { message: 'gateway timeout' },
+    }, 504));
+    const error = await askModel({
+      apiKey: KEY, model: 'gpt-6.1-sol', instructions: 'x',
+      input: [{ role: 'user', content: 'y' }],
+    }, fetchImpl).catch((e: unknown) => e);
+
+    // The one that matters: this request may well have been billed, and
+    // recording zero for it would say it was free.
+    expect((error as ModelError).usage).toBeNull();
+    expect(priceUsage('gpt-6.1-sol', (error as ModelError).usage).basis).toBe('no_usage');
   });
 
   it('throws with the status and the tokens when the provider refuses the request', async () => {

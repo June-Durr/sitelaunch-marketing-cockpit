@@ -211,7 +211,7 @@ the platform. These have to be set with `supabase secrets set`:
 | `GOOGLE_OAUTH_CLIENT_SECRET` | The other half of that client. With this and the redirect uri, somebody else could run the whole consent flow as SiteLaunch. |
 | `GOOGLE_OAUTH_REDIRECT_URI` | Must match an Authorized redirect URI on the Google client, exactly. |
 | `COCKPIT_APP_URL` | Where the callback sends a browser afterwards. The only acceptable destination, so there is no open redirect. |
-| `OPENAI_API_KEY` | The assistant's model key. Read by `supabase/functions/assistant` and by nothing else. Without it the panel still opens and says it is waiting on a key; with it, it answers. |
+| `OPENAI_API_KEY` | The assistant's model key. Read by `supabase/functions/assistant` and by nothing else. Without it the panel still opens and says it is waiting on a key; with it, it answers. `OPENAI-API-KEY` with hyphens is also accepted, because the dashboard allows that name and a key that is set but invisible to the function looks exactly like a broken feature. The function logs which name it found, never the value. |
 | `ASSISTANT_MODEL` | Optional. Replaces the default model for all three assistant operations. |
 | `ASSISTANT_MODEL_CAPTURE`, `ASSISTANT_MODEL_DRAFT`, `ASSISTANT_MODEL_BRIEF` | Optional, one operation each, and they win over `ASSISTANT_MODEL`. The defaults and the reasoning are in `server/integrations/openai.ts`. |
 
@@ -289,9 +289,21 @@ than taking an owner from the arguments.
 
 `ai_usage` holds one row per request, including failed ones, because a failed
 request is still billed. Cost is in `cost_micros`, millionths of a dollar, as an
-integer. The price table lives in `server/integrations/openai.ts`; a model that
-is not in it still gets a row with real token counts and a zero cost, marked in
-`error`, so the total is understood as a floor rather than as free.
+integer, and it is **nullable**: null means the cost is not known, which is not
+the same as zero and must not be summed as if it were.
+
+Three cases, kept apart on purpose:
+
+| Row | `cost_micros` | `error` | `note` |
+|---|---|---|---|
+| Answered, model priced | the arithmetic | null | null |
+| Answered, model not in the price table | null | null | why |
+| Failed with no usage reported | null | what happened | null |
+
+The third is the one that matters. A request that times out after the model has
+generated tokens is billed and reports nothing, so a zero there would understate
+the bill. `unknown_cost_says_why` makes a row with an unknown cost state a
+reason, so null cannot become a lazy default.
 
 ---
 

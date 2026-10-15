@@ -222,16 +222,20 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
             }));
 
         /*
-         * A missing key is configuration, not a failure of the question.
+         * A missing key or an empty balance is configuration, not a failure of
+         * the question.
          *
-         * The banner carries the server's full sentence, including what to set,
-         * because that is a standing state. The turn gets one short line, so the
-         * same paragraph is not printed twice on screen.
+         * The banner carries the server's full sentence, including what to do
+         * about it, because that is a standing state. The turn gets one short
+         * line, so the same paragraph is not printed twice on screen.
          */
-        if (answer.status === 'no_model_key') setNotice(answer.error);
+        const configuration = answer.status === 'no_model_key' || answer.status === 'no_credit';
+        if (configuration) setNotice(answer.error);
         const shortError = answer.status === 'no_model_key'
           ? 'There is no model key set yet, so I cannot answer.'
-          : (answer.error ?? answer.status);
+          : answer.status === 'no_credit'
+            ? 'The model account is out of credits, so I cannot answer.'
+            : (answer.error ?? answer.status);
 
         const settled = answer.proposal?.leadId ?? built.focusLeadId;
         if (settled && settled !== focusLeadId) setFocusLeadId(settled);

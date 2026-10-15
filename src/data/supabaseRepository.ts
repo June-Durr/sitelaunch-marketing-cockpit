@@ -800,7 +800,7 @@ export function createSupabaseRepository(): Repository {
       }
 
       const known: AssistantAnswer['status'][] = [
-        'ok', 'refused', 'failed', 'no_model_key', 'not_signed_in',
+        'ok', 'refused', 'failed', 'no_model_key', 'no_credit', 'not_signed_in',
         'not_configured', 'bad_request', 'unreachable', 'unavailable',
       ];
       const reported = typeof body.status === 'string' ? body.status : '';
@@ -945,16 +945,18 @@ export function createSupabaseRepository(): Repository {
      * What the assistant has cost, read from the rows the server wrote.
      *
      * Summed here rather than in SQL because it is a handful of rows and a view
-     * would be another migration to keep in step. Two things are counted apart
-     * from the money: calls that failed, which were still billed, and calls on a
-     * model with no price on file, which make the total a floor rather than a
-     * total. Saying "about" when it is a floor is the difference between a
-     * number somebody can trust and one they cannot.
+     * would be another migration to keep in step.
+     *
+     * A null cost is counted as not known rather than added in as zero. Those
+     * two are not the same thing and the difference runs the wrong way: a
+     * request that failed after the model had worked was billed and reported
+     * nothing, so treating it as free understates the bill. The count comes
+     * back separately and the screen says the total is a floor.
      */
     async loadAiUsage(days = 30): Promise<AiUsageSummary> {
       const since = new Date(Date.now() - days * 86_400_000).toISOString();
       const empty: AiUsageSummary = {
-        requests: 0, costMicros: 0, unpriced: 0, failures: 0, since: since.slice(0, 10),
+        requests: 0, costMicros: 0, unknownCost: 0, failures: 0, since: since.slice(0, 10),
       };
 
       const { data, error } = await db
@@ -965,16 +967,16 @@ export function createSupabaseRepository(): Repository {
 
       const rows = (data ?? []) as { cost_micros: number | null; error: string | null }[];
       let costMicros = 0;
-      let unpriced = 0;
+      let unknownCost = 0;
       let failures = 0;
       for (const row of rows) {
-        costMicros += typeof row.cost_micros === 'number' ? row.cost_micros : 0;
-        const problem = row.error ?? '';
-        if (problem === '') continue;
-        if (problem.includes('no price on file')) unpriced += 1;
-        else failures += 1;
+        if (typeof row.cost_micros === 'number') costMicros += row.cost_micros;
+        else unknownCost += 1;
+        if ((row.error ?? '') !== '') failures += 1;
       }
-      return { requests: rows.length, costMicros, unpriced, failures, since: since.slice(0, 10) };
+      return {
+        requests: rows.length, costMicros, unknownCost, failures, since: since.slice(0, 10),
+      };
     },
   };
 
