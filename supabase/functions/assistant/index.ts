@@ -408,7 +408,9 @@ Deno.serve(async (request: Request): Promise<Response> => {
     const { costMicros, basis } = priceUsage(model, usage);
 
     await recordUsage(service, ownerId, operation, model, usage, costMicros, basis, summary);
-    safeLog('assistant: request failed', summary);
+    // The key's name, never its value, so a configuration problem is visible
+    // in the logs of a failed request as well as a successful one.
+    safeLog(`assistant: request failed, key=${configured.from}`, summary);
 
     /*
      * An exhausted balance is configuration, like a missing key, and the panel
@@ -417,13 +419,27 @@ Deno.serve(async (request: Request): Promise<Response> => {
      * the difference between a person adding credit and a person debugging.
      */
     if (isOutOfCredit(error)) {
+      /*
+       * Name the account, because "add credit" is not actionable on its own.
+       *
+       * A project scoped key draws on one organisation's balance. Credit added
+       * to a different organisation, or to a different login, looks from in
+       * here exactly like credit nobody added, and the identifiers are the only
+       * way to tell those apart. They are identifiers, not credentials.
+       */
+      const account = error instanceof ModelError ? error.account : null;
+      const where = account?.organization
+        ? ` The key is charged to organisation ${account.organization}`
+          + `${account.project ? `, project ${account.project}` : ''}, `
+          + 'so the credit has to be on that balance.'
+        : '';
       return json({
         status: 'no_credit',
         model,
         error:
           'The model account has no credits left, so nothing can be asked yet. '
-          + 'Everything else is set up and working; add credit to the OpenAI '
-          + 'account and this starts answering with no further changes.',
+          + 'Everything else is set up and working; add credit and this starts '
+          + 'answering with no further changes.' + where,
       }, 503);
     }
 

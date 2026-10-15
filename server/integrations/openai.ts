@@ -164,6 +164,20 @@ export interface ModelResult {
   truncated: string | null;
 }
 
+/**
+ * Which account a request was charged to, as the provider reported it.
+ *
+ * Identifiers, not credentials, and they are the difference between "add
+ * credit" and "add credit to this organisation". A project scoped key draws on
+ * one particular organisation's balance, and credit added to a different one
+ * looks from here exactly like credit that was never added. Read off the
+ * response headers because nothing else says which account answered.
+ */
+export interface ModelAccount {
+  organization: string | null;
+  project: string | null;
+}
+
 /** A request that failed, with nothing in it that could have come from a key. */
 export class ModelError extends Error {
   readonly status: number | null;
@@ -175,13 +189,29 @@ export class ModelError extends Error {
    * recording zero for it would understate the bill. Null means not known.
    */
   readonly usage: ModelUsage | null;
+  /** Null when the failure happened before any response came back. */
+  readonly account: ModelAccount | null;
 
-  constructor(message: string, status: number | null = null, usage: ModelUsage | null = null) {
+  constructor(
+    message: string,
+    status: number | null = null,
+    usage: ModelUsage | null = null,
+    account: ModelAccount | null = null,
+  ) {
     super(message);
     this.name = 'ModelError';
     this.status = status;
     this.usage = usage;
+    this.account = account;
   }
+}
+
+/** The account that answered, off the response headers. Absent is normal. */
+export function readAccount(response: Response): ModelAccount {
+  return {
+    organization: response.headers.get('openai-organization'),
+    project: response.headers.get('openai-project'),
+  };
 }
 
 export const EMPTY_USAGE: ModelUsage = { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 };
@@ -444,7 +474,10 @@ export async function askModel(
   }
 
   if (!response.ok) {
-    throw new ModelError(readError(response.status, body), response.status, readUsage(body));
+    throw new ModelError(
+      readError(response.status, body), response.status, readUsage(body),
+      readAccount(response),
+    );
   }
 
   const result = readResult(request.model, body);

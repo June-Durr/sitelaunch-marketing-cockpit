@@ -275,6 +275,36 @@ describe('telling an empty balance apart from a failure', () => {
     expect(isOutOfCredit(error)).toBe(false);
   });
 
+  it('carries the account the key is charged to, so the credit can be found', async () => {
+    // The identifiers the real API returned on 2026-10-15. "Add credit" is not
+    // actionable without them: credit on another organisation looks identical
+    // to credit nobody added.
+    const fetchImpl = vi.fn(async (_url: string, _init: RequestInit) => {
+      const response = answer(REAL, 429);
+      response.headers.set('openai-organization', 'user-t4zut13ktq3petrtvb3cqcxg');
+      response.headers.set('openai-project', 'proj_WyiwwnZzzqDsf0DuZt2HQSeP');
+      return response;
+    });
+    const error = await askModel({
+      apiKey: KEY, model: 'gpt-6-luna', instructions: 'x',
+      input: [{ role: 'user', content: 'y' }],
+    }, fetchImpl).catch((e: unknown) => e);
+
+    expect((error as ModelError).account).toEqual({
+      organization: 'user-t4zut13ktq3petrtvb3cqcxg',
+      project: 'proj_WyiwwnZzzqDsf0DuZt2HQSeP',
+    });
+  });
+
+  it('is content with no account headers at all', async () => {
+    const fetchImpl = vi.fn(async (_url: string, _init: RequestInit) => answer(REAL, 429));
+    const error = await askModel({
+      apiKey: KEY, model: 'gpt-6-luna', instructions: 'x',
+      input: [{ role: 'user', content: 'y' }],
+    }, fetchImpl).catch((e: unknown) => e);
+    expect((error as ModelError).account).toEqual({ organization: null, project: null });
+  });
+
   it('is false for anything that is not a model error', () => {
     expect(isOutOfCredit(new Error('no credits remaining'))).toBe(false);
     expect(isOutOfCredit(null)).toBe(false);
