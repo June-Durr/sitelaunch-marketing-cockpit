@@ -128,7 +128,10 @@ function harness(options: {
   draftOutcome?: Partial<DraftOutcome>;
   drain?: { ran: boolean; succeeded: number; failed: number };
   noAssistant?: boolean;
+  updateFailures?: number;
 }) {
+  Object.defineProperty(navigator, 'clipboard', { configurable: true,
+    value: { writeText: vi.fn(async () => {}) } });
   const calls: Calls = {
     capture: [], touch: [], draft: [], copied: [], sent: [], updates: [],
   };
@@ -147,6 +150,7 @@ function harness(options: {
     insertMany: unused,
     update: (async (table: string, id: string, patch: Record<string, unknown>) => {
       calls.updates.push({ table, id, patch });
+      if (calls.updates.length <= (options.updateFailures ?? 0)) throw new Error('Test reminder failure');
       return {} as never;
     }) as unknown as DataContextValue['update'],
     remove: async () => unused(),
@@ -523,7 +527,7 @@ describe('recording a contact that already happened', () => {
     }),
   });
 
-  it('records it against the right contact and leaves the cadence to the rule', async () => {
+  it('records it against the right contact with the same immediate action suggestion', async () => {
     const { calls } = harness({ reply: touchReply });
     await ask('I ran into Chef Jamie at the market on Monday');
     await waitFor(() => expect(screen.getByText('Record this')).toBeTruthy());
@@ -533,8 +537,7 @@ describe('recording a contact that already happened', () => {
 
     expect(calls.touch[0].leadId).toBe('l-jamie');
     expect(calls.touch[0].occurredOn).toBe('2026-10-12');
-    // Blank means "use the follow-up rule", which is the normal case.
-    expect(calls.touch[0].nextDueDate).toBeNull();
+    expect(calls.touch[0].nextDueDate).toBe(today());
     expect(calls.touch[0].evidence).toBe('User report');
 
     await waitFor(() => expect(screen.getByText('Contact recorded.')).toBeTruthy());
@@ -744,7 +747,7 @@ describe('what happens the moment a contact is saved', () => {
       expect(screen.getByText('A first message, ready to look over.')).toBeTruthy());
     const message = (screen.getByLabelText('The first message') as HTMLTextAreaElement).value;
 
-    expect(message).toContain('Hi ZZ');
+    expect(message).toContain('Hi Eddie');
     expect(message).toContain('the chamber mixer');
     expect(message).toContain('send examples');
     // And nothing invented.
@@ -870,24 +873,160 @@ describe('what happens the moment a contact is saved', () => {
     expect(screen.queryByText(/no response/i)).toBeNull();
   });
 
-  it('writes the suggested next date to the record only when asked', async () => {
+  it('applies the reviewed next date with send confirmation, without a second scheduling click', async () => {
     const { calls } = harness({});
     await saveThenLook();
     await waitFor(() => expect(screen.getByText('I sent this')).toBeTruthy());
-    fireEvent.click(screen.getByText('I sent this'));
-    await waitFor(() => expect(screen.getByText('Use that date')).toBeTruthy());
-
     expect(calls.updates).toEqual([]);
-
-    fireEvent.click(screen.getByText('Use that date'));
+    fireEvent.click(screen.getByText('I sent this'));
     await waitFor(() => expect(calls.updates).toHaveLength(1));
     expect(calls.updates[0].table).toBe('leads');
     expect(calls.updates[0].id).toBe('l-new');
     expect(typeof calls.updates[0].patch.next_action_date).toBe('string');
+    expect(screen.queryByText('Use that date')).toBeNull();
   });
 });
 
 /* ========================================================= being honest === */
+
+describe('one input produces the complete contact-to-message plan', () => {
+  it('shows an editable message before saving and never makes a second model request', async () => {
+    const { value, calls } = harness({});
+    await ask('Met Eddie yesterday. I promised to text examples.');
+    await waitFor(() => expect(screen.getByLabelText('The first message')).toBeTruthy());
+    expect((screen.getByLabelText(/^Next follow-up, suggested/) as HTMLInputElement).value).toBe(today());
+    fireEvent.change(screen.getByLabelText('The first message'), { target: { value: 'Hi Eddie, as promised I will send examples after lunch.' } });
+    fireEvent.click(screen.getByText('Copy, not sent'));
+    await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalled());
+    expect(calls.capture).toEqual([]);
+    expect(calls.draft).toEqual([]);
+    expect(calls.sent).toEqual([]);
+    fireEvent.click(screen.getByText('Save this contact'));
+    await waitFor(() => expect(screen.getByText('Contact saved.')).toBeTruthy());
+    expect((screen.getByLabelText('The first message') as HTMLTextAreaElement).value).toBe('Hi Eddie, as promised I will send examples after lunch.');
+    expect(calls.draft).toHaveLength(1);
+    expect(calls.draft[0].body).toBe('Hi Eddie, as promised I will send examples after lunch.');
+    expect(value.askAssistant).toHaveBeenCalledTimes(1);
+    expect(calls.sent).toEqual([]);
+  });
+
+  it('gives an existing contact the identical message handoff without creating another person', async () => {
+    const { calls, value } = harness({ reply: answer({ proposal: proposal({
+      intent: 'record', leadId: 'l-new',
+      person: { ...proposal().person, name: 'ZZ Test Harness' },
+    }) }) });
+    await ask('Met ZZ Test Harness last night. I promised to text examples.');
+    await waitFor(() => expect(screen.getByLabelText('The first message')).toBeTruthy());
+    const initial = (screen.getByLabelText('The first message') as HTMLTextAreaElement).value;
+    expect(initial).toContain('the chamber mixer');
+    fireEvent.click(screen.getByText('Record this'));
+    await waitFor(() => expect(screen.getByText('Contact recorded.')).toBeTruthy());
+    expect((screen.getByLabelText('The first message') as HTMLTextAreaElement).value).toBe(initial);
+    expect(calls.touch).toHaveLength(1);
+    expect(calls.touch[0].nextDueDate).toBe(today());
+    expect(calls.capture).toEqual([]);
+    expect(calls.draft).toHaveLength(1);
+    expect(screen.getByText('Open in Messages')).toBeTruthy();
+    expect(screen.getByText('Add to phone contacts')).toBeTruthy();
+    expect(value.askAssistant).toHaveBeenCalledTimes(1);
+    expect(calls.sent).toEqual([]);
+  });
+
+  it('keeps an explicitly selected reminder and records one send even after a double press', async () => {
+    const { calls } = harness({});
+    await ask('Met someone; promised examples.');
+    await waitFor(() => expect(screen.getByText('Save this contact')).toBeTruthy());
+    fireEvent.click(screen.getByText('Save this contact'));
+    await waitFor(() => expect(screen.getByText('I sent this')).toBeTruthy());
+    fireEvent.change(screen.getByLabelText(/Check-in after sending, suggested/), { target: { value: '2026-10-24' } });
+    const confirm = screen.getByText('I sent this');
+    fireEvent.click(confirm); fireEvent.click(confirm);
+    await waitFor(() => expect(calls.updates).toHaveLength(1));
+    expect(calls.sent).toHaveLength(1);
+    expect(calls.updates[0].patch.next_action_date).toBe('2026-10-24');
+    expect(screen.queryByText('Use that date')).toBeNull();
+  });
+
+  it('retries only the reminder when sending was recorded but scheduling failed', async () => {
+    const { calls } = harness({ updateFailures: 1 });
+    await ask('Met someone; promised examples.');
+    await waitFor(() => expect(screen.getByText('Save this contact')).toBeTruthy());
+    fireEvent.click(screen.getByText('Save this contact'));
+    await waitFor(() => expect(screen.getByText('I sent this')).toBeTruthy());
+    fireEvent.click(screen.getByText('I sent this'));
+    await waitFor(() => expect(screen.getByRole('alert')).toBeTruthy());
+    expect(screen.getByRole('alert').textContent).toContain('The send is recorded');
+    fireEvent.click(screen.getByText('Retry saving the reminder'));
+    await waitFor(() => expect(calls.updates).toHaveLength(2));
+    expect(calls.sent).toHaveLength(1);
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+  });
+
+  it('does not claim a copy succeeded when the browser refuses the clipboard', async () => {
+    const { calls } = harness({});
+    await ask('Met someone; promised examples.');
+    await waitFor(() => expect(screen.getByText('Save this contact')).toBeTruthy());
+    fireEvent.click(screen.getByText('Save this contact'));
+    await waitFor(() => expect(screen.getByText('I sent this')).toBeTruthy());
+    vi.mocked(navigator.clipboard.writeText).mockRejectedValueOnce(new Error('Denied'));
+    fireEvent.click(screen.getByText('Copy, not sent'));
+    await waitFor(() => expect(screen.getByText(/Clipboard unavailable/)).toBeTruthy());
+    expect(calls.copied).toEqual([]);
+    expect(calls.sent).toEqual([]);
+  });
+
+  it('honors clearing the initial suggestion instead of silently restoring a cadence date', async () => {
+    const { calls } = harness({});
+    await ask('Met someone and promised examples.');
+    await waitFor(() => expect(screen.getByLabelText(/^Next follow-up, suggested/)).toBeTruthy());
+    fireEvent.change(screen.getByLabelText(/^Next follow-up, suggested/), { target: { value: '' } });
+    fireEvent.click(screen.getByText('Save this contact'));
+    await waitFor(() => expect(screen.getByText('Contact saved.')).toBeTruthy());
+    expect(calls.capture[0].nextDueDate).toBeNull();
+    expect(calls.updates[0].patch.next_action_date).toBeNull();
+    expect(screen.getByText('None scheduled')).toBeTruthy();
+    expect(calls.sent).toEqual([]);
+  });
+
+  it('allows no next reminder while still recording the confirmed send once', async () => {
+    const { calls } = harness({});
+    await ask('Met someone and promised examples.');
+    await waitFor(() => expect(screen.getByText('Save this contact')).toBeTruthy());
+    fireEvent.click(screen.getByText('Save this contact'));
+    await waitFor(() => expect(screen.getByText('I sent this')).toBeTruthy());
+    fireEvent.change(screen.getByLabelText(/Check-in after sending, suggested/), { target: { value: '' } });
+    fireEvent.click(screen.getByText('I sent this'));
+    await waitFor(() => expect(calls.updates).toHaveLength(1));
+    expect(calls.updates[0].patch.next_action_date).toBeNull();
+    expect(calls.sent).toHaveLength(1);
+  });
+
+  it('keeps a number on a matched contact whose older record has no phone', async () => {
+    const { calls } = harness({ data: dataset({ leads: [{ ...SAVED_NEW, phone: null }] }),
+      reply: answer({ proposal: proposal({ intent: 'record', leadId: 'l-new' }) }) });
+    await ask('Met ZZ Test Harness, promised examples. 305 555 0199.');
+    await waitFor(() => expect(screen.getByText('Record this')).toBeTruthy());
+    fireEvent.click(screen.getByText('Record this'));
+    await waitFor(() => expect(screen.getByText('Contact recorded.')).toBeTruthy());
+    expect(calls.updates.some(call => call.id === 'l-new' && call.patch.phone === '305 555 0199')).toBe(true);
+    expect(calls.capture).toEqual([]);
+    expect(calls.sent).toEqual([]);
+  });
+
+  it('keeps wording edited after saving when it is copied', async () => {
+    const { calls } = harness({});
+    await ask('Met someone, promised examples.');
+    await waitFor(() => expect(screen.getByText('Save this contact')).toBeTruthy());
+    fireEvent.click(screen.getByText('Save this contact'));
+    await waitFor(() => expect(screen.getByText('I sent this')).toBeTruthy());
+    const revised = 'Hi Eddie, I enjoyed our conversation. I will send the examples this afternoon.';
+    fireEvent.change(screen.getByLabelText('The first message'), { target: { value: revised } });
+    fireEvent.click(screen.getByText('Copy, not sent'));
+    await waitFor(() => expect(calls.copied).toHaveLength(1));
+    expect(calls.draft.at(-1)?.body).toBe(revised);
+    expect(calls.sent).toEqual([]);
+  });
+});
 
 describe('when it cannot work', () => {
   it('says the key is missing rather than looking broken', async () => {
@@ -1030,3 +1169,4 @@ describe('when it cannot work', () => {
     expect(screen.getByText(/1 that failed and were still billed/)).toBeTruthy();
   });
 });
+

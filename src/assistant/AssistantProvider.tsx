@@ -303,6 +303,51 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
 
   /* -------------------------------------------------------------- saving --- */
 
+  const keepInitialMessage = useCallback(async (leadId: string | null, body?: string) => {
+    if (!leadId || !body?.trim() || !repoSaveDraft) return { draftId: null, error: null };
+    try {
+      const result = await repoSaveDraft(leadId, 'Text', body);
+      return { draftId: result.ok ? result.draftId : null,
+        error: result.ok ? null : 'The record saved, but the message draft could not be kept. The text is still here to copy or retry.' };
+    } catch {
+      return { draftId: null, error: 'The record saved, but the message draft could not be kept. The text is still here to copy or retry.' };
+    }
+  }, [repoSaveDraft]);
+
+  // The legacy RPC treats null as "keep/use cadence". An explicitly cleared
+  // first-action date is different and must remove the resulting reminder.
+  const clearFirstAction = useCallback(async (leadId: string | null, due: string, body?: string) => {
+    if (!leadId || due !== '' || body === undefined) return null;
+    try {
+      await update('leads', leadId, { next_action_date: null });
+      return null;
+    } catch {
+      return 'The record saved, but clearing its follow-up failed. Check the contact before relying on its date.';
+    }
+  }, [update]);
+
+  const keepTouchHandle = useCallback(async (leadId: string, handle?: string, channel?: string) => {
+    const lead = leads.find((candidate) => candidate.id === leadId);
+    const value = handle?.trim();
+    if (!lead || !value) return null;
+    const patch: { phone?: string; email?: string; preferred_channel?: string; notes?: string } = {};
+    if (/^[+()\d .-]+$/.test(value) && value.replace(/\D/g, '').length >= 7) {
+      if (lead.phone !== value) patch.phone = value;
+    } else if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) {
+      if (lead.email !== value) patch.email = value;
+    } else if (!(lead.notes ?? '').includes(`Contact: ${value}`)) {
+      patch.notes = [lead.notes, `Contact: ${value}`].filter(Boolean).join('\n');
+    }
+    if (channel?.trim()) patch.preferred_channel = channel.trim();
+    if (!Object.keys(patch).length) return null;
+    try {
+      await update('leads', leadId, patch);
+      return null;
+    } catch {
+      return 'The conversation saved, but the contact details could not be updated. Check their phone or address before sending.';
+    }
+  }, [leads, update]);
+
   const saveContact = useCallback(
     async (turnId: number, edited: ContactEdit) => {
       const capture = captureContact;
@@ -338,36 +383,41 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
         }
 
         if (outcome.leadId) setFocusLeadId(outcome.leadId);
+        const keptMessage = await keepInitialMessage(outcome.leadId, edited.firstMessage);
+        const clearError = await clearFirstAction(outcome.leadId, edited.nextDueDate, edited.firstMessage);
         const saved: SavedRecord = {
           kind: 'contact',
           leadId: outcome.leadId,
           label: edited.name.trim() || edited.organization.trim() || 'the contact',
           activityId: null,
-          draftId: null,
+          draftId: keptMessage.draftId,
           occurredOn: outcome.recordedMeeting ? edited.metOn : null,
           // As edited, not as proposed. The first message has to say what was
           // actually saved.
           promise: edited.nextAction.trim() === '' ? null : edited.nextAction.trim(),
+          firstMessage: edited.firstMessage,
           place: turn.proposal.conversation.place,
-          nextDueDate: outcome.nextDueDate,
+          nextDueDate: edited.nextDueDate === '' && !clearError && edited.firstMessage !== undefined ? null : outcome.nextDueDate,
           factsWritten: outcome.factsWritten,
           factsSkipped: outcome.factsSkipped,
           reused: outcome.reused,
           sync: 'queued',
         };
-        patchTurn(turnId, { saved, saveError: null });
+        patchTurn(turnId, { saved, saveError: clearError ?? keptMessage.error });
         drainFor(turnId);
       } finally {
         setBusy(false);
       }
     },
-    [captureContact, drainFor, patchTurn, turns],
+    [captureContact, drainFor, patchTurn, turns, keepInitialMessage, clearFirstAction],
   );
 
   const saveTouch = useCallback(
     async (turnId: number, edited: TouchEdit) => {
       const record = recordConversation;
       if (!record) return;
+      const turn = turns.find((candidate) => candidate.id === turnId);
+      const proposal = turn?.kind === 'assistant' ? turn.proposal : null;
 
       setBusy(true);
       try {
@@ -390,30 +440,34 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
         }
 
         const lead = leads.find((candidate) => candidate.id === edited.leadId);
+        const keptMessage = await keepInitialMessage(edited.leadId, edited.firstMessage);
+        const handleError = await keepTouchHandle(edited.leadId, edited.handle, edited.contactChannel);
+        const clearError = await clearFirstAction(edited.leadId, edited.nextDueDate, edited.firstMessage);
         patchTurn(turnId, {
           saved: {
             kind: 'touch',
             leadId: edited.leadId,
             label: lead ? leadLabel(lead) : 'the contact',
             activityId: outcome.activityId,
-            draftId: null,
+            draftId: keptMessage.draftId,
             occurredOn: outcome.occurredOn,
             promise: edited.nextAction.trim() === '' ? null : edited.nextAction.trim(),
-            place: null,
-            nextDueDate: outcome.nextDueDate,
+            place: proposal?.conversation.place ?? null,
+            firstMessage: edited.firstMessage,
+            nextDueDate: edited.nextDueDate === '' && !clearError && edited.firstMessage !== undefined ? null : outcome.nextDueDate,
             factsWritten: 0,
             factsSkipped: 0,
             reused: outcome.reused,
             sync: 'queued',
           },
-          saveError: null,
+          saveError: handleError ?? clearError ?? keptMessage.error,
         });
         drainFor(turnId);
       } finally {
         setBusy(false);
       }
     },
-    [drainFor, leads, patchTurn, recordConversation],
+    [drainFor, leads, patchTurn, recordConversation, turns, keepInitialMessage, clearFirstAction, keepTouchHandle],
   );
 
   const refreshDrafts = useCallback(
@@ -722,3 +776,4 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
 
   return <AssistantContext.Provider value={value}>{children}</AssistantContext.Provider>;
 }
+

@@ -52,6 +52,8 @@ export interface SavedRecord {
    * until the worker says so.
    */
   sync: 'none' | 'queued' | 'synced' | 'partial';
+  /** Wording edited in the initial review; never requires a second Ask. */
+  firstMessage?: string;
 }
 
 export type Turn =
@@ -116,6 +118,7 @@ export interface AssistantValue {
 
 /** The capture card's fields, as the person left them. */
 export interface ContactEdit {
+  firstMessage?: string;
   name: string;
   organization: string;
   channel: string;
@@ -129,6 +132,9 @@ export interface ContactEdit {
 }
 
 export interface TouchEdit {
+  firstMessage?: string;
+  handle?: string;
+  contactChannel?: string;
   leadId: string;
   occurredOn: string;
   summary: string;
@@ -176,3 +182,4 @@ export function formatCost(micros: number): string {
   if (dollars < 0.01) return 'under a cent';
   return `$${dollars.toFixed(2)}`;
 }
+

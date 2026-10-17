@@ -21,7 +21,8 @@ import { Field, Tag } from '../components/primitives';
 import { useData } from '../data/context';
 import { leadLabel } from '../lib/leadLabel';
 import { FirstContact } from './FirstContact';
-import { suggestFirstFollowUp } from './followUpSuggestion';
+import { ContactPlan } from './ContactPlan';
+import { useContactPlan } from './useContactPlan';
 import { formatDay, today } from '../lib/dates';
 import {
   FACT_KIND_LABELS, PROVENANCE_LABELS, PROVENANCE_NOTES,
@@ -160,6 +161,8 @@ function SavedCard({ turn }: { turn: AssistantTurn }) {
   const [nextAction, setNextAction] = useState(turn.proposal?.conversation.nextAction ?? '');
   const [nextDueDate, setNextDueDate] = useState(saved.nextDueDate ?? '');
   const [summary, setSummary] = useState(turn.proposal?.conversation.summary ?? '');
+  const [confirmedFollowUp, setConfirmedFollowUp] = useState<{ date: string | null } | null>(null);
+  const shownFollowUp = confirmedFollowUp ? confirmedFollowUp.date : saved.nextDueDate;
 
   const what = {
     contact: saved.reused ? 'This contact was already saved.' : 'Contact saved.',
@@ -198,7 +201,7 @@ function SavedCard({ turn }: { turn: AssistantTurn }) {
         {saved.kind !== 'draft' ? (
           <div>
             <dt>Next follow-up</dt>
-            <dd>{saved.nextDueDate ? formatDay(saved.nextDueDate) : 'None scheduled'}</dd>
+            <dd>{shownFollowUp ? formatDay(shownFollowUp) : 'None scheduled'}</dd>
           </div>
         ) : null}
         {saved.factsWritten > 0 || saved.factsSkipped > 0 ? (
@@ -214,20 +217,23 @@ function SavedCard({ turn }: { turn: AssistantTurn }) {
         ) : null}
       </dl>
 
-      <SyncLine saved={saved} />
-      <ResultLinks saved={saved} />
+      {!confirmedFollowUp ? <SyncLine saved={saved} /> : null}
+      <ResultLinks saved={{ ...saved, nextDueDate: shownFollowUp }} />
 
       {/*
         A saved contact is filing until something goes out, so the message comes
         next, already written. Only for a contact: a recorded touch or a
         confirmed send has already happened.
       */}
-      {saved.kind === 'contact' && saved.leadId ? (
+      {(saved.kind === 'contact' || (saved.kind === 'touch' && saved.firstMessage)) && saved.leadId ? (
         <FirstContact
           leadId={saved.leadId}
           metWhere={saved.place}
           metOn={saved.occurredOn}
           promise={saved.promise}
+          initialMessage={saved.firstMessage}
+          initialDraftId={saved.draftId}
+          onReminderSaved={(date) => { setConfirmedFollowUp({ date }); setNextDueDate(date ?? ''); }}
           noteOptions={(turn.proposal?.facts ?? []).map((fact) => fact.value)}
         />
       ) : null}
@@ -319,31 +325,14 @@ function CaptureCard({ turn }: { turn: AssistantTurn }) {
    * today and the old thirty day cadence turned it into a reminder to have
    * already let somebody down.
    */
-  const suggestion = suggestFirstFollowUp({
+  const plan = useContactPlan({
+    name, metWhere: conversation.place, metOn: metOn || null,
     statedDate: conversation.nextDueDate,
-    promise: conversation.nextAction,
-    today: today(),
+    promise: nextAction || null,
   });
-  const [nextDueDate, setNextDueDate] = useState(suggestion.date ?? '');
-  const [datePicked, setDatePicked] = useState(false);
 
   const [keep, setKeep] = useState<boolean[]>(proposal.facts.map(() => true));
 
-  const dateSource: 'you' | 'suggested' | 'edited' = datePicked
-    ? 'edited'
-    : suggestion.suggested
-      ? 'suggested'
-      : 'you';
-
-  const dateLabel = {
-    you: 'Next follow-up, from what you said',
-    suggested: 'Next follow-up, suggested',
-    edited: 'Next follow-up, your date',
-  }[dateSource];
-
-  const dateHint = dateSource === 'edited'
-    ? 'Yours, and it is what will be saved.'
-    : suggestion.reason;
 
   return (
     <div className="asst-card">
@@ -379,18 +368,19 @@ function CaptureCard({ turn }: { turn: AssistantTurn }) {
             onChange={(event) => setNextAction(event.target.value)}
           />
         </Field>
-        <Field label={dateLabel} hint={dateHint}>
+        <Field label={plan.dateLabel} hint={plan.dateHint}>
           <input
             type="date"
-            className={dateSource === 'suggested' ? 'asst-suggested' : undefined}
-            value={nextDueDate}
+            className={plan.suggested ? 'asst-suggested' : undefined}
+            value={plan.date}
             onChange={(event) => {
-              setDatePicked(true);
-              setNextDueDate(event.target.value);
+              plan.setDate(event.target.value);
             }}
           />
         </Field>
       </div>
+
+      <ContactPlan plan={plan} />
 
       <FactList
         facts={proposal.facts}
@@ -407,7 +397,7 @@ function CaptureCard({ turn }: { turn: AssistantTurn }) {
           onClick={() =>
             void saveContact(turn.id, {
               name, organization, channel, handle, metOn, interest,
-              nextAction, nextDueDate, keepFacts: keep,
+              nextAction, nextDueDate: plan.date, firstMessage: plan.body, keepFacts: keep,
             })
           }
         >
@@ -424,6 +414,7 @@ function CaptureCard({ turn }: { turn: AssistantTurn }) {
 /* ------------------------------------------------------- record a contact --- */
 
 function TouchCard({ turn }: { turn: AssistantTurn }) {
+  const { data } = useData();
   const { saveTouch, busy } = useAssistant();
   const proposal = turn.proposal!;
   const { conversation } = proposal;
@@ -434,7 +425,17 @@ function TouchCard({ turn }: { turn: AssistantTurn }) {
   const [channel, setChannel] = useState(conversation.channel ?? '');
   const [outcome, setOutcome] = useState(conversation.outcome ?? '');
   const [nextAction, setNextAction] = useState(conversation.nextAction ?? '');
-  const [nextDueDate, setNextDueDate] = useState(conversation.nextDueDate ?? '');
+  const lead = data.leads.find((candidate) => candidate.id === leadId);
+  const [handle, setHandle] = useState(proposal.person.handle ?? lead?.phone ?? lead?.email ?? '');
+  const [contactChannel, setContactChannel] = useState(proposal.person.channel ?? lead?.preferred_channel ?? '');
+  const hasNextMessage = Boolean(conversation.place || nextAction.trim());
+  const plan = useContactPlan({
+    name: lead?.prospect_name ?? proposal.person.name,
+    metWhere: conversation.place, metOn: occurredOn || null,
+    promise: nextAction || null, statedDate: conversation.nextDueDate,
+    suggest: hasNextMessage,
+    repliesRecorded: data.activityEvents.filter((event) => event.lead_id === leadId && event.activity_type === 'reply_received').length,
+  });
 
   if (!leadId) {
     return (
@@ -451,6 +452,12 @@ function TouchCard({ turn }: { turn: AssistantTurn }) {
     <div className="asst-card">
       <p className="asst-card-head">Something that already happened.</p>
       <div className="asst-fields">
+        <Field label="Their handle or address" hint="Review this contact detail before recording. It will be kept on their existing contact.">
+          <input value={handle} onChange={(event) => setHandle(event.target.value)} />
+        </Field>
+        <Field label="How to reach them">
+          <input value={contactChannel} onChange={(event) => setContactChannel(event.target.value)} />
+        </Field>
         <Field
           label="The day it happened"
           hint={occurredOn === '' ? 'Needed. A contact with no day is not a record of anything.' : undefined}
@@ -481,13 +488,14 @@ function TouchCard({ turn }: { turn: AssistantTurn }) {
           />
         </Field>
         <Field
-          label="Next follow-up"
-          hint="Leave this blank to let the follow-up rule decide."
+          label={hasNextMessage ? plan.dateLabel : 'Next follow-up'}
+          hint={hasNextMessage ? plan.dateHint : 'Leave this blank if no date was agreed.'}
         >
           <input
             type="date"
-            value={nextDueDate}
-            onChange={(event) => setNextDueDate(event.target.value)}
+            className={hasNextMessage && plan.suggested ? 'asst-suggested' : undefined}
+            value={plan.date}
+            onChange={(event) => plan.setDate(event.target.value)}
           />
         </Field>
       </div>
@@ -498,13 +506,17 @@ function TouchCard({ turn }: { turn: AssistantTurn }) {
           disabled={busy || occurredOn === '' || summary.trim() === ''}
           onClick={() =>
             void saveTouch(turn.id, {
-              leadId, occurredOn, summary, channel, outcome, nextAction, nextDueDate,
+              leadId, occurredOn, summary, channel, outcome, nextAction,
+              nextDueDate: plan.date,
+              firstMessage: hasNextMessage ? plan.body : undefined,
+              handle, contactChannel,
             })
           }
         >
           Record this
         </button>
       </div>
+      {hasNextMessage ? <ContactPlan plan={plan} /> : null}
     </div>
   );
 }
@@ -667,3 +679,4 @@ export function ProposalCard({ turn }: { turn: AssistantTurn }) {
       return <AnswerLinks turn={turn} />;
   }
 }
+
