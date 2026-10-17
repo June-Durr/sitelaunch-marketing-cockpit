@@ -19,7 +19,7 @@
  * nothing, and a template cannot invent a link or a portfolio or a colleague.
  */
 
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 
 import { Field } from '../components/primitives';
 import { useData } from '../data/context';
@@ -33,6 +33,9 @@ import { suggestAfterSend } from './followUpSuggestion';
 import { pressToken } from './pressToken';
 
 export interface FirstContactProps {
+  initialMessage?: string;
+  initialDraftId?: string | null;
+  onReminderSaved?: (date: string | null) => void;
   leadId: string;
   /** Where you met, in the words from the capture. */
   metWhere: string | null;
@@ -88,12 +91,13 @@ export function FirstContact(props: FirstContactProps) {
     promise: props.promise,
   });
 
-  const [body, setBody] = useState(composed.body);
-  const [edited, setEdited] = useState(false);
+  const [body, setBody] = useState(props.initialMessage ?? composed.body);
+  const [edited, setEdited] = useState(props.initialMessage !== undefined);
   // The composed text follows the introduction until somebody types their own.
   const message = edited ? body : composed.body;
 
-  const [draftId, setDraftId] = useState<string | null>(null);
+  const [draftId, setDraftId] = useState<string | null>(props.initialDraftId ?? null);
+  const [savedBody, setSavedBody] = useState(props.initialMessage ?? '');
   const [copied, setCopied] = useState(false);
   const [sentOn, setSentOn] = useState(today());
   const [sent, setSent] = useState<{ on: string; activityId: string | null } | null>(null);
@@ -102,6 +106,36 @@ export function FirstContact(props: FirstContactProps) {
   const [showCard, setShowCard] = useState(false);
   const [keepNotes, setKeepNotes] = useState<boolean[]>(props.noteOptions.map(() => true));
   const [applied, setApplied] = useState(false);
+  const sending = useRef(false);
+  const confirmToken = useRef<string | null>(null);
+  const [reminderEdited, setReminderEdited] = useState(false);
+  const [reminderDate, setReminderDate] = useState('');
+  const [reminderError, setReminderError] = useState<string | null>(null);
+  const [syncState, setSyncState] = useState<string | null>(null);
+  const nextStep = suggestAfterSend({ sentOn, body: message, repliesRecorded, statedDate: null });
+  const selectedReminder = reminderEdited ? reminderDate : nextStep.date ?? '';
+
+  const saveReminder = async () => {
+    await ctx.update('leads', props.leadId, {
+      next_action_date: selectedReminder || null,
+      next_action: selectedReminder ? 'Review reply status and follow up if appropriate' : null,
+    });
+    setApplied(true);
+    props.onReminderSaved?.(selectedReminder || null);
+    setReminderError(null);
+    setSyncState('Follow-up saved. Calendar and tracking sync queued.');
+    if (ctx.drainSyncJobs) {
+      try {
+        const result = await ctx.drainSyncJobs();
+        const pending = ctx.loadSyncPending ? await ctx.loadSyncPending() : null;
+        setSyncState(result.failed > 0 ? 'Follow-up saved. A sync failed and needs a retry.'
+          : pending && !pending.calendar && !pending.leadMirror ? 'Follow-up saved. Calendar and tracking synced.'
+          : 'Follow-up saved. Calendar and tracking sync queued; completion is not yet confirmed.');
+      } catch {
+        setSyncState('Follow-up saved. Calendar and tracking sync could not be confirmed.');
+      }
+    }
+  };
 
   const support = contactSupport(
     typeof navigator === 'undefined' ? undefined : navigator,
@@ -113,7 +147,7 @@ export function FirstContact(props: FirstContactProps) {
 
   /** Make sure the wording exists as a draft before anything is done with it. */
   const ensureDraft = async (): Promise<string | null> => {
-    if (draftId) return draftId;
+    if (draftId && savedBody === message) return draftId;
     if (!ctx.saveDraft) return null;
     const outcome = await ctx.saveDraft(props.leadId, 'Text', message);
     if (!outcome.ok) {
@@ -121,6 +155,7 @@ export function FirstContact(props: FirstContactProps) {
       return null;
     }
     setDraftId(outcome.draftId);
+    setSavedBody(message);
     return outcome.draftId;
   };
 
@@ -129,10 +164,11 @@ export function FirstContact(props: FirstContactProps) {
     setBusy(true);
     try {
       try {
-        await navigator.clipboard?.writeText(message);
+        if (!navigator.clipboard?.writeText) throw new Error('Clipboard unavailable');
+        await navigator.clipboard.writeText(message);
       } catch {
-        // A browser that refuses the clipboard has not failed a save. The text
-        // is on screen and selectable either way.
+        setProblem('Clipboard unavailable. Select the message and copy it manually. Nothing was sent.');
+        return;
       }
       const id = await ensureDraft();
       if (id && ctx.markDraftCopied) await ctx.markDraftCopied(id);
@@ -189,13 +225,15 @@ export function FirstContact(props: FirstContactProps) {
 
   /** The only path here that records contact, because you said it happened. */
   const confirmSent = async () => {
-    if (!ctx.markDraftSent) return;
+    if (!ctx.markDraftSent || sending.current || sent || !message.trim() || !sentOn) return;
+    sending.current = true;
     setBusy(true);
     setProblem(null);
     try {
       const id = await ensureDraft();
       if (!id) return;
-      const outcome = await ctx.markDraftSent(id, pressToken(`first-${props.leadId}`), sentOn, message);
+      confirmToken.current ??= pressToken(`first-${props.leadId}`);
+      const outcome = await ctx.markDraftSent(id, confirmToken.current, sentOn, message);
       if (!outcome.sent) {
         setProblem(
           outcome.error
@@ -206,29 +244,25 @@ export function FirstContact(props: FirstContactProps) {
         return;
       }
       setSent({ on: outcome.sentOn ?? sentOn, activityId: outcome.activityId });
+      try {
+        await saveReminder();
+      } catch {
+        setReminderError('The send is recorded. The follow-up could not be saved. Retry only the reminder below; do not confirm the send again.');
+      }
+    } catch {
+      setProblem('The send confirmation could not be verified. Check the activity log before trying again.');
     } finally {
+      sending.current = false;
       setBusy(false);
     }
   };
 
-  const nextStep = sent
-    ? suggestAfterSend({
-        sentOn: sent.on,
-        body: message,
-        repliesRecorded,
-        statedDate: null,
-      })
-    : null;
-
   const applyNext = async () => {
-    if (!nextStep?.date) return;
     setBusy(true);
     try {
-      await ctx.update('leads', props.leadId, {
-        next_action_date: nextStep.date,
-        next_action: props.promise ?? 'Follow up',
-      });
-      setApplied(true);
+      await saveReminder();
+    } catch {
+      setReminderError('The send is recorded, but the reminder still could not be saved.');
     } finally {
       setBusy(false);
     }
@@ -241,7 +275,12 @@ export function FirstContact(props: FirstContactProps) {
     setIntroducing(false);
     // The composed message picks the new introduction up, unless it has been
     // edited by hand, in which case the person's wording wins.
-    setEdited(false);
+    if (edited && intro.name?.trim() && !settings.introduction.name) {
+      const identity = `it's ${intro.name.trim()}${intro.business?.trim() ? ` from ${intro.business.trim()}` : ''}.`;
+      setBody(/^Hi(?: [^,.]+)?,\s*/.test(message)
+        ? message.replace(/^(Hi(?: [^,.]+)?),\s*/, `$1, ${identity} `)
+        : `${identity.charAt(0).toUpperCase()}${identity.slice(1)} ${message}`);
+    }
   };
 
   return (
@@ -258,19 +297,22 @@ export function FirstContact(props: FirstContactProps) {
           {nextStep ? (
             <div className="asst-next">
               <p className="asst-next-head">
-                Next follow-up {nextStep.suggested ? 'suggested' : 'from what you said'}:{' '}
-                <strong>{formatDay(nextStep.date)}</strong>
+                Next follow-up {reminderEdited ? 'your date' : nextStep.suggested ? 'suggested' : 'from what you said'}:{' '}
+                <strong>{selectedReminder ? formatDay(selectedReminder) : 'None selected'}</strong>
               </p>
-              <p className="asst-hint">{nextStep.reason}</p>
+              <p className="asst-hint">{reminderEdited
+                ? selectedReminder ? 'Your selected check-in date. Check the recorded reply status before reaching out.' : 'You chose not to schedule another check-in.'
+                : nextStep.reason}</p>
               {applied ? (
-                <p className="asst-hint">Saved to their record.</p>
+                <p className="asst-hint">{syncState ?? 'Saved to their record.'}</p>
               ) : (
                 <button className="btn btn-quiet" disabled={busy} onClick={() => void applyNext()}>
-                  Use that date
+                  Retry saving the reminder
                 </button>
               )}
             </div>
           ) : null}
+          {reminderError ? <p className="asst-problem" role="alert">{reminderError}</p> : null}
         </>
       ) : (
         <>
@@ -291,7 +333,7 @@ export function FirstContact(props: FirstContactProps) {
             </p>
           ))}
 
-          {introducing || (settings.introduction.name === null && !edited) ? (
+          {introducing || settings.introduction.name === null ? (
             <div className="asst-fields asst-intro">
               <Field label="Your name">
                 <input
@@ -325,7 +367,7 @@ export function FirstContact(props: FirstContactProps) {
             <button className="btn btn-quiet" onClick={() => setShowCard(!showCard)}>
               {showCard ? 'Hide the contact card' : 'Add to phone contacts'}
             </button>
-            <button className="btn" disabled={busy} onClick={() => void confirmSent()}>
+            <button className="btn" disabled={busy || !message.trim() || !sentOn} onClick={() => void confirmSent()}>
               I sent this
             </button>
           </div>
@@ -338,7 +380,15 @@ export function FirstContact(props: FirstContactProps) {
                 onChange={(event) => setSentOn(event.target.value)}
               />
             </Field>
+            <Field label={reminderEdited ? 'Check-in after sending, your date' : 'Check-in after sending, suggested'}
+              hint="Saved only when you confirm sending. Change or clear it now; no extra Ask or scheduling button is needed.">
+              <input type="date" className={!reminderEdited ? 'asst-suggested' : undefined}
+                value={selectedReminder} onChange={(event) => { setReminderEdited(true); setReminderDate(event.target.value); }} />
+            </Field>
           </div>
+          <p className="asst-hint">{reminderEdited
+            ? selectedReminder ? 'Your selected check-in date. Check the recorded reply status before reaching out.' : 'You chose not to schedule another check-in.'
+            : nextStep.reason}</p>
 
           {smsLink ? (
             <p className="asst-hint">
@@ -422,3 +472,4 @@ export function FirstContact(props: FirstContactProps) {
     </div>
   );
 }
+
