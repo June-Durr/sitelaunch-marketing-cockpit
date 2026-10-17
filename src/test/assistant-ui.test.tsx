@@ -36,10 +36,24 @@ const JAMIE_TWO = makeLead({
   id: 'l-jamie-two', prospect_name: 'Jamie Olsen', organization: 'Olsen Tile',
 });
 
+/**
+ * The contact a capture has just created, as a refresh would bring it back.
+ *
+ * capture_contact decides where a handle ends up, so the panel reads the saved
+ * row rather than the proposal: this is that row.
+ */
+const SAVED_NEW = makeLead({
+  id: 'l-new',
+  prospect_name: 'ZZ Test Harness',
+  organization: 'ZZ Test Taqueria',
+  phone: '305 555 0188',
+  stage: 'new_contact',
+});
+
 function dataset(over: Partial<Dataset> = {}): Dataset {
   return {
     ...EMPTY_DATASET,
-    leads: [JAMIE, JAMIE_TWO],
+    leads: [JAMIE, JAMIE_TWO, SAVED_NEW],
     activityEvents: [
       makeActivity({
         id: 'a-1', lead_id: 'l-jamie', occurred_at: '2026-10-12T12:00:00.000Z',
@@ -62,7 +76,8 @@ function proposal(over: Partial<AssistantProposal> = {}): AssistantProposal {
       location: 'Doral', interest: 'a one page site',
     },
     conversation: {
-      occurredOn: '2026-10-12', summary: 'Met at the chamber mixer',
+      occurredOn: '2026-10-12', place: 'the chamber mixer',
+      summary: 'Met at the chamber mixer',
       channel: 'in person', outcome: null, nextAction: 'Send examples',
       nextDueDate: null,
     },
@@ -302,15 +317,15 @@ describe('describing somebody you met', () => {
     expect(screen.queryByText('Your impression')).toBeNull();
   });
 
-  it('says a suggested follow-up is a suggestion, and whose rhythm it is', async () => {
+  it('says a suggested follow-up is a suggestion, and why that day', async () => {
     harness({});
     await ask('Met Eddie at the mixer');
 
     await waitFor(() =>
       expect(screen.getByLabelText(/^Next follow-up, suggested/)).toBeTruthy());
-    expect(screen.getByText(/Nobody named a day/)).toBeTruthy();
-    expect(screen.getByText(/30 days out/)).toBeTruthy();
-    expect(screen.getByText(/not a reading of anything you said/)).toBeTruthy();
+    // It names the promise it is built on, so the date is not a mystery.
+    expect(screen.getByText(/You said you would send examples/)).toBeTruthy();
+    expect(screen.getByText(/owed/)).toBeTruthy();
   });
 
   it('stops calling the date a suggestion once it is changed', async () => {
@@ -331,7 +346,8 @@ describe('describing somebody you met', () => {
       reply: answer({
         proposal: proposal({
           conversation: {
-            occurredOn: '2026-10-16', summary: 'Met at the mixer', channel: 'in person',
+            occurredOn: '2026-10-16', place: 'the mixer',
+            summary: 'Met at the mixer', channel: 'in person',
             outcome: null, nextAction: 'Text examples', nextDueDate: '2026-10-20',
           },
         }),
@@ -344,15 +360,34 @@ describe('describing somebody you met', () => {
     expect(screen.getByText(/You named this day/)).toBeTruthy();
   });
 
-  it('fills the follow-up date from the rule rather than from the model', async () => {
+  it('puts the follow-up today when something was promised', async () => {
     harness({});
     await ask('Met Eddie at the mixer');
     await waitFor(() => expect(screen.getByLabelText(/^Next follow-up/)).toBeTruthy());
 
+    // The fixture promises to send examples. A promise is owed now, so the
+    // suggestion is today rather than a month out on the cadence.
     const field = screen.getByLabelText(/^Next follow-up/) as HTMLInputElement;
-    // Thirty days from today, which is FOLLOW_UP_CADENCE_DAYS.new_contact and
-    // the only place that decision is made.
-    expect(field.value).toBe(addDays(today(), FOLLOW_UP_CADENCE_DAYS.new_contact!));
+    expect(field.value).toBe(today());
+    expect(field.value).not.toBe(addDays(today(), FOLLOW_UP_CADENCE_DAYS.new_contact!));
+  });
+
+  it('suggests tomorrow when nothing was promised', async () => {
+    harness({
+      reply: answer({
+        proposal: proposal({
+          conversation: {
+            occurredOn: '2026-10-16', place: 'the mixer', summary: 'Met at the mixer',
+            channel: 'in person', outcome: null, nextAction: null, nextDueDate: null,
+          },
+        }),
+      }),
+    });
+    await ask('Met somebody at the mixer, nothing promised');
+    await waitFor(() => expect(screen.getByLabelText(/^Next follow-up/)).toBeTruthy());
+
+    const field = screen.getByLabelText(/^Next follow-up/) as HTMLInputElement;
+    expect(field.value).toBe(addDays(today(), 1));
   });
 
   it('saves only the facts that were left ticked', async () => {
@@ -479,7 +514,8 @@ describe('recording a contact that already happened', () => {
       intent: 'record',
       leadId: 'l-jamie',
       conversation: {
-        occurredOn: '2026-10-12', summary: 'Talked at the market about the menu photos',
+        occurredOn: '2026-10-12', place: 'the market',
+        summary: 'Talked at the market about the menu photos',
         channel: 'in person', outcome: 'She will send the photos', nextAction: 'Chase the photos',
         nextDueDate: null,
       },
@@ -510,7 +546,7 @@ describe('recording a contact that already happened', () => {
         proposal: proposal({
           intent: 'record', leadId: 'l-jamie',
           conversation: {
-            occurredOn: null, summary: 'Talked at some point', channel: null,
+            occurredOn: null, place: null, summary: 'Talked at some point', channel: null,
             outcome: null, nextAction: null, nextDueDate: null,
           },
           facts: [],
@@ -687,6 +723,167 @@ describe('asking where things stand', () => {
     // Pinned, which the header says and the unpin button proves.
     await waitFor(() => expect(screen.getByText('Not about them')).toBeTruthy());
     expect(screen.getByText('Chef Jamie, FaKafe')).toBeTruthy();
+  });
+});
+
+/* ===================================== the first minute after saving === */
+
+describe('what happens the moment a contact is saved', () => {
+  async function saveThenLook() {
+    await ask('Met ZZ Test Harness at the chamber mixer, said I would text examples');
+    await waitFor(() => expect(screen.getByText('Save this contact')).toBeTruthy());
+    fireEvent.click(screen.getByText('Save this contact'));
+    await waitFor(() => expect(screen.getByText('Contact saved.')).toBeTruthy());
+  }
+
+  it('writes the first message out of what was recorded, and nothing else', async () => {
+    harness({});
+    await saveThenLook();
+
+    await waitFor(() =>
+      expect(screen.getByText('A first message, ready to look over.')).toBeTruthy());
+    const message = (screen.getByLabelText('The first message') as HTMLTextAreaElement).value;
+
+    expect(message).toContain('Hi ZZ');
+    expect(message).toContain('the chamber mixer');
+    expect(message).toContain('send examples');
+    // And nothing invented.
+    expect(message).not.toMatch(/https?:/);
+    expect(message).not.toContain('[');
+    expect(message.toLowerCase()).not.toContain('attached');
+  });
+
+  it('asks who you are rather than inventing an introduction', async () => {
+    harness({});
+    await saveThenLook();
+    await waitFor(() => expect(screen.getByLabelText('Your name')).toBeTruthy());
+    expect(screen.getByText(/how you introduce yourself/)).toBeTruthy();
+    const message = (screen.getByLabelText('The first message') as HTMLTextAreaElement).value;
+    expect(message).not.toContain('Your Name');
+  });
+
+  it('uses the introduction once it is given', async () => {
+    harness({});
+    await saveThenLook();
+    await waitFor(() => expect(screen.getByLabelText('Your name')).toBeTruthy());
+
+    fireEvent.change(screen.getByLabelText('Your name'), { target: { value: 'Invented Sender' } });
+    fireEvent.change(screen.getByLabelText('Your business'), {
+      target: { value: 'Invented Studios' },
+    });
+    fireEvent.click(screen.getByText('Use this in my messages'));
+
+    await waitFor(() => {
+      const message = (screen.getByLabelText('The first message') as HTMLTextAreaElement).value;
+      expect(message).toContain('Invented Sender from Invented Studios');
+    });
+  });
+
+  it('records a copy as a copy, and records no send', async () => {
+    const { calls } = harness({});
+    await saveThenLook();
+    await waitFor(() => expect(screen.getByText('Copy, not sent')).toBeTruthy());
+
+    fireEvent.click(screen.getByText('Copy, not sent'));
+
+    await waitFor(() => expect(calls.copied).toEqual(['d-new']));
+    expect(screen.getByText(/not the same as sent/)).toBeTruthy();
+    expect(calls.sent).toEqual([]);
+    expect(calls.touch).toEqual([]);
+  });
+
+  it('offers Messages when there is a number, and says what it does not do', async () => {
+    const { calls } = harness({});
+    await saveThenLook();
+    await waitFor(() => expect(screen.getByText('Open in Messages')).toBeTruthy());
+
+    expect(screen.getByText(/does not send anything and does not record a send/)).toBeTruthy();
+
+    fireEvent.click(screen.getByText('Open in Messages'));
+    // Handing the text to another app is a copy, and only a copy.
+    await waitFor(() => expect(calls.copied).toEqual(['d-new']));
+    expect(calls.sent).toEqual([]);
+  });
+
+  it('previews the contact card and refuses to claim it deduplicates', async () => {
+    harness({});
+    await saveThenLook();
+    await waitFor(() => expect(screen.getByText('Add to phone contacts')).toBeTruthy());
+
+    fireEvent.click(screen.getByText('Add to phone contacts'));
+
+    await waitFor(() => expect(screen.getByText('305 555 0188')).toBeTruthy());
+    expect(screen.getByText('ZZ Test Taqueria')).toBeTruthy();
+    expect(screen.getByText(/does not deduplicate anything/)).toBeTruthy();
+  });
+
+  it('exports a contact card with only the notes that were left ticked', async () => {
+    const written: string[] = [];
+    const originalCreate = URL.createObjectURL;
+    const originalRevoke = URL.revokeObjectURL;
+    // jsdom has no blob urls. What would have been written is the part worth
+    // asserting, so it is captured on the way past.
+    URL.createObjectURL = ((blob: Blob) => {
+      void blob.text().then((body) => written.push(body));
+      return 'blob:stub';
+    }) as typeof URL.createObjectURL;
+    URL.revokeObjectURL = (() => {}) as typeof URL.revokeObjectURL;
+
+    try {
+      harness({});
+      await saveThenLook();
+      await waitFor(() => expect(screen.getByText('Add to phone contacts')).toBeTruthy());
+      fireEvent.click(screen.getByText('Add to phone contacts'));
+      await waitFor(() => expect(screen.getByText('Download the contact card')).toBeTruthy());
+
+      const boxes = screen.getAllByRole('checkbox');
+      fireEvent.click(boxes[boxes.length - 1]);
+      fireEvent.click(screen.getByText('Download the contact card'));
+
+      await waitFor(() => expect(written).toHaveLength(1));
+      expect(written[0]).toContain('FN:ZZ Test Harness');
+      expect(written[0]).toContain('TEL;TYPE=CELL:305 555 0188');
+      expect(written[0]).toContain('Wants a one page site before the season');
+      expect(written[0]).not.toContain('His partner decides the budget');
+    } finally {
+      URL.createObjectURL = originalCreate;
+      URL.revokeObjectURL = originalRevoke;
+    }
+  });
+
+  it('records one contact when you confirm you sent it, and suggests what is next', async () => {
+    const { calls } = harness({});
+    await saveThenLook();
+    await waitFor(() => expect(screen.getByText('I sent this')).toBeTruthy());
+
+    fireEvent.click(screen.getByText('I sent this'));
+
+    await waitFor(() => expect(calls.sent).toHaveLength(1));
+    expect(calls.sent[0].body).toContain('the chamber mixer');
+    await waitFor(() => expect(screen.getByText('Recorded as sent.')).toBeTruthy());
+    expect(screen.getByText(/one contact recorded against this person/)).toBeTruthy();
+
+    // The next step, and never a claim about silence.
+    expect(screen.getByText(/Next follow-up suggested/)).toBeTruthy();
+    const reason = screen.getByText(/Nothing is recorded either way yet/);
+    expect(reason.textContent).toContain('not the same as them not replying');
+    expect(screen.queryByText(/no response/i)).toBeNull();
+  });
+
+  it('writes the suggested next date to the record only when asked', async () => {
+    const { calls } = harness({});
+    await saveThenLook();
+    await waitFor(() => expect(screen.getByText('I sent this')).toBeTruthy());
+    fireEvent.click(screen.getByText('I sent this'));
+    await waitFor(() => expect(screen.getByText('Use that date')).toBeTruthy());
+
+    expect(calls.updates).toEqual([]);
+
+    fireEvent.click(screen.getByText('Use that date'));
+    await waitFor(() => expect(calls.updates).toHaveLength(1));
+    expect(calls.updates[0].table).toBe('leads');
+    expect(calls.updates[0].id).toBe('l-new');
+    expect(typeof calls.updates[0].patch.next_action_date).toBe('string');
   });
 });
 

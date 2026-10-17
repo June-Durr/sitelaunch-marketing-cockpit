@@ -101,6 +101,8 @@ export interface ProposedPerson {
 
 export interface ProposedConversation {
   occurredOn: string | null;
+  /** The event or venue, in their words. Used in the first message. */
+  place: string | null;
   summary: string | null;
   channel: string | null;
   outcome: string | null;

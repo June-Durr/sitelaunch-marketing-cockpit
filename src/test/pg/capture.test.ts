@@ -157,6 +157,71 @@ describe('capturing somebody who is not in the Cockpit yet', () => {
     expect(facts[0].occurred_on).toBeNull();
   });
 
+  it('files a handle that is a phone number as a phone number', async () => {
+    // It used to land in the notes only, so nothing could dial it and the
+    // contact card had no number to export.
+    const result = await t.asUser(USER_A, () =>
+      capture({
+        token: 'capture-phone',
+        name: 'Invented Dialable',
+        channel: 'Text',
+        handle: '305 555 0188',
+      }));
+
+    const [lead] = await rows<Record<string, string | null>>(
+      'select phone, email, notes from leads where id = $1', [result.lead_id],
+    );
+    expect(lead.phone).toBe('305 555 0188');
+    expect(lead.email).toBeNull();
+    // And the label somebody typed is still readable in the notes.
+    expect(lead.notes).toContain('Text: 305 555 0188');
+  });
+
+  it('files a handle that is an address as an address, lowercased', async () => {
+    const result = await t.asUser(USER_A, () =>
+      capture({
+        token: 'capture-email',
+        name: 'Invented Emailer',
+        channel: 'Email',
+        handle: 'Invented.Emailer@Example.COM',
+      }));
+
+    const [lead] = await rows<Record<string, string | null>>(
+      'select phone, email from leads where id = $1', [result.lead_id],
+    );
+    expect(lead.email).toBe('invented.emailer@example.com');
+    expect(lead.phone).toBeNull();
+  });
+
+  it('leaves a handle that is neither in the notes alone', async () => {
+    // An @name has no column, and inventing one for it would be worse than
+    // leaving it where somebody will read it.
+    const result = await t.asUser(USER_A, () =>
+      capture({
+        token: 'capture-handle',
+        name: 'Invented Poster',
+        channel: 'Instagram',
+        handle: '@invented.poster',
+      }));
+
+    const [lead] = await rows<Record<string, string | null>>(
+      'select phone, email, notes from leads where id = $1', [result.lead_id],
+    );
+    expect(lead.phone).toBeNull();
+    expect(lead.email).toBeNull();
+    expect(lead.notes).toContain('@invented.poster');
+  });
+
+  it('does not mistake a short number or a stray word for either', async () => {
+    const result = await t.asUser(USER_A, () =>
+      capture({ token: 'capture-vague', name: 'Invented Vague', handle: 'ask Dave' }));
+    const [lead] = await rows<Record<string, string | null>>(
+      'select phone, email from leads where id = $1', [result.lead_id],
+    );
+    expect(lead.phone).toBeNull();
+    expect(lead.email).toBeNull();
+  });
+
   it('queues both syncs, so the sheet and the calendar catch up', async () => {
     const result = await t.asUser(USER_A, () =>
       capture({ token: 'capture-sync', name: 'Invented Painter', metOn: '2026-10-12' }));

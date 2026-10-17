@@ -174,9 +174,17 @@ export const REPLY_SCHEMA: Record<string, unknown> = {
     conversation: {
       type: 'object',
       additionalProperties: false,
-      required: ['occurred_on', 'summary', 'channel', 'outcome', 'next_action', 'next_due_date'],
+      required: [
+        'occurred_on', 'place', 'summary', 'channel', 'outcome', 'next_action', 'next_due_date',
+      ],
       properties: {
         occurred_on: { ...nullableString, description: 'yyyy-mm-dd. The day the contact happened.' },
+        place: {
+          ...nullableString,
+          description:
+            'Where it happened, in their words, for example "the chamber mixer". '
+            + 'The event or venue, not the town. Null unless they said.',
+        },
         summary: nullableString,
         channel: nullableString,
         outcome: { ...nullableString, description: 'What came of it, in one short line.' },
@@ -292,6 +300,11 @@ export function buildInstructions(context: AssistantContext): string {
     'recorded. Leave next_due_date null unless the person named a day. If they say',
     'a weekday or "next week", resolve it against today and say in your reply which',
     'date you took it to mean.',
+    '',
+    'WHERE YOU MET',
+    'conversation.place is the event or venue in their words: "the chamber mixer",',
+    '"the Doral meetup". It is not the town and not the channel. It goes into the',
+    'first message, so a guess at it is a guess in something that gets sent.',
     '',
     'DRAFTS',
     'Write the message the person would actually send: a few lines, specific to what',

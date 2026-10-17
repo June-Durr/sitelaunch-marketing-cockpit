@@ -20,7 +20,8 @@ import { Link } from 'react-router-dom';
 import { Field, Tag } from '../components/primitives';
 import { useData } from '../data/context';
 import { leadLabel } from '../lib/leadLabel';
-import { FOLLOW_UP_CADENCE_DAYS, nextFollowUpDate } from '../config/followUp';
+import { FirstContact } from './FirstContact';
+import { suggestFirstFollowUp } from './followUpSuggestion';
 import { formatDay, today } from '../lib/dates';
 import {
   FACT_KIND_LABELS, PROVENANCE_LABELS, PROVENANCE_NOTES,
@@ -216,6 +217,21 @@ function SavedCard({ turn }: { turn: AssistantTurn }) {
       <SyncLine saved={saved} />
       <ResultLinks saved={saved} />
 
+      {/*
+        A saved contact is filing until something goes out, so the message comes
+        next, already written. Only for a contact: a recorded touch or a
+        confirmed send has already happened.
+      */}
+      {saved.kind === 'contact' && saved.leadId ? (
+        <FirstContact
+          leadId={saved.leadId}
+          metWhere={saved.place}
+          metOn={saved.occurredOn}
+          promise={saved.promise}
+          noteOptions={(turn.proposal?.facts ?? []).map((fact) => fact.value)}
+        />
+      ) : null}
+
       {editing ? (
         <div className="asst-fields">
           {saved.leadId ? (
@@ -295,41 +311,39 @@ function CaptureCard({ turn }: { turn: AssistantTurn }) {
    * Where the follow-up date comes from, and saying so.
    *
    * Three different things can put a date in this box and they are not the same
-   * claim. The person may have named one. The Cockpit's cadence rule may have
-   * suggested one, which for a new contact is thirty days and has nothing to do
-   * with this particular person. Or they may have typed one just now.
+   * claim: the person named one, the app suggested one, or they typed one just
+   * now. The label says which.
    *
-   * The first live capture showed why this matters: a promise to text examples
-   * came with a suggested date a month out, and nothing on screen said the
-   * month was a default rather than a reading of what was said.
+   * The suggestion itself is in src/assistant/followUpSuggestion.ts. It leads
+   * with whatever was promised, because a promise to text examples is owed
+   * today and the old thirty day cadence turned it into a reminder to have
+   * already let somebody down.
    */
-  const cadence = FOLLOW_UP_CADENCE_DAYS.new_contact;
-  const ruleDate = nextFollowUpDate('new_contact', today());
-  const stated = conversation.nextDueDate;
-  const [nextDueDate, setNextDueDate] = useState(stated ?? ruleDate ?? '');
+  const suggestion = suggestFirstFollowUp({
+    statedDate: conversation.nextDueDate,
+    promise: conversation.nextAction,
+    today: today(),
+  });
+  const [nextDueDate, setNextDueDate] = useState(suggestion.date ?? '');
   const [datePicked, setDatePicked] = useState(false);
+
   const [keep, setKeep] = useState<boolean[]>(proposal.facts.map(() => true));
 
-  const dateSource: 'you' | 'rule' | 'edited' = datePicked
+  const dateSource: 'you' | 'suggested' | 'edited' = datePicked
     ? 'edited'
-    : stated !== null
-      ? 'you'
-      : 'rule';
+    : suggestion.suggested
+      ? 'suggested'
+      : 'you';
 
   const dateLabel = {
     you: 'Next follow-up, from what you said',
-    rule: 'Next follow-up, suggested',
+    suggested: 'Next follow-up, suggested',
     edited: 'Next follow-up, your date',
   }[dateSource];
 
-  const dateHint = {
-    you: 'You named this day, so it was not changed.',
-    rule:
-      `Nobody named a day, so the Cockpit's own rhythm for a new contact put it `
-      + `${cadence} days out. It is not a reading of anything you said. Change it `
-      + 'if you meant sooner, or clear it for no follow-up.',
-    edited: 'Yours, and it is what will be saved.',
-  }[dateSource];
+  const dateHint = dateSource === 'edited'
+    ? 'Yours, and it is what will be saved.'
+    : suggestion.reason;
 
   return (
     <div className="asst-card">
@@ -368,7 +382,7 @@ function CaptureCard({ turn }: { turn: AssistantTurn }) {
         <Field label={dateLabel} hint={dateHint}>
           <input
             type="date"
-            className={dateSource === 'rule' ? 'asst-suggested' : undefined}
+            className={dateSource === 'suggested' ? 'asst-suggested' : undefined}
             value={nextDueDate}
             onChange={(event) => {
               setDatePicked(true);

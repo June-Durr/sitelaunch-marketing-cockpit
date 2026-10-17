@@ -29,6 +29,15 @@ export interface SavedRecord {
   draftId: string | null;
   /** The day the touch is recorded against. */
   occurredOn: string | null;
+  /**
+   * What was promised and where you met, as saved.
+   *
+   * Carried on the record rather than read back off the proposal, because the
+   * person may have edited both before saving and the first message has to say
+   * what was actually saved.
+   */
+  promise: string | null;
+  place: string | null;
   nextDueDate: string | null;
   factsWritten: number;
   /** Facts left out because they would have been dishonest. Shown, not hidden. */

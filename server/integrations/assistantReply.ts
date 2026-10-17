@@ -41,6 +41,8 @@ export interface ProposedPerson {
 
 export interface ProposedConversation {
   occurredOn: string | null;
+  /** The event or venue, in their words. Used in the first message. */
+  place: string | null;
   summary: string | null;
   channel: string | null;
   outcome: string | null;
@@ -217,6 +219,7 @@ export function readProposal(
   note(nextDue.problem);
   const conversation: ProposedConversation = {
     occurredOn: occurredOn.day,
+    place: text(conversationIn.place, MAX_FIELD),
     summary: text(conversationIn.summary, MAX_SUMMARY),
     channel: text(conversationIn.channel, MAX_FIELD),
     outcome: text(conversationIn.outcome, MAX_FIELD),
@@ -336,7 +339,7 @@ export function unparsableProposal(reply: string): AssistantProposal {
       handle: null, metOn: null, location: null, interest: null,
     },
     conversation: {
-      occurredOn: null, summary: null, channel: null,
+      occurredOn: null, place: null, summary: null, channel: null,
       outcome: null, nextAction: null, nextDueDate: null,
     },
     draft: { channel: null, body: null, language: null },

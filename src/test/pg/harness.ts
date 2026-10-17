@@ -55,6 +55,7 @@ export const MIGRATION_FILES = [
   '0018_usage_can_be_unknown.sql',
   '0019_spend_guard.sql',
   '0020_user_stated_provenance.sql',
+  '0021_capture_keeps_the_number.sql',
 ];
 
 export const USER_A = '11111111-1111-1111-1111-111111111111';

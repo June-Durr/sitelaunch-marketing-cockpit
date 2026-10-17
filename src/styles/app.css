@@ -1611,3 +1611,22 @@ table.data td.num { white-space: nowrap; }
   border-style: solid;
   color: var(--charcoal);
 }
+
+/* ------------------------------------------- the first minute after saving -- */
+
+.asst-first {
+  margin-top: 0.9rem;
+  padding-top: 0.8rem;
+  border-top: 1px solid var(--rule);
+}
+.asst-first-head { margin: 0 0 0.5rem; font-size: 0.8rem; color: var(--charcoal); }
+.asst-intro { margin-top: 0.6rem; }
+.asst-vcard { margin-top: 0.75rem; }
+.asst-next {
+  margin-top: 0.7rem;
+  padding: 0.55rem 0.7rem;
+  background: var(--violet-soft);
+  border-left: 2px solid var(--violet);
+}
+.asst-next-head { margin: 0 0 0.25rem; font-size: 0.84rem; }
+.asst-next .asst-hint { margin-bottom: 0.5rem; }

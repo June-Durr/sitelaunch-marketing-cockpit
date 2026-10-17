@@ -28,6 +28,7 @@ import { leadLabel } from '../lib/leadLabel';
 import type { MessageDraft } from '../types/assistant';
 import { buildAssistantContext } from './buildContext';
 import { pickOperation } from './route';
+import { pressToken } from './pressToken';
 import {
   AssistantContext, type AssistantValue, type Candidate, type ContactEdit,
   type DraftEdit, type RevisionPatch, type SavedRecord, type TouchEdit, type Turn,
@@ -51,10 +52,7 @@ type NewTurn =
 /** One array, so the derived empty case is the same object every render. */
 const EMPTY_DRAFTS: MessageDraft[] = [];
 
-/** One value per press of one button. */
-function pressToken(what: string): string {
-  return `assistant:${what}:${Date.now()}:${Math.random().toString(36).slice(2, 10)}`;
-}
+
 
 export function AssistantProvider({ children }: { children: ReactNode }) {
   const ctx = useData();
@@ -347,6 +345,10 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
           activityId: null,
           draftId: null,
           occurredOn: outcome.recordedMeeting ? edited.metOn : null,
+          // As edited, not as proposed. The first message has to say what was
+          // actually saved.
+          promise: edited.nextAction.trim() === '' ? null : edited.nextAction.trim(),
+          place: turn.proposal.conversation.place,
           nextDueDate: outcome.nextDueDate,
           factsWritten: outcome.factsWritten,
           factsSkipped: outcome.factsSkipped,
@@ -396,6 +398,8 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
             activityId: outcome.activityId,
             draftId: null,
             occurredOn: outcome.occurredOn,
+            promise: edited.nextAction.trim() === '' ? null : edited.nextAction.trim(),
+            place: null,
             nextDueDate: outcome.nextDueDate,
             factsWritten: 0,
             factsSkipped: 0,
@@ -446,6 +450,8 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
             activityId: null,
             draftId: outcome.draftId,
             occurredOn: null,
+            promise: null,
+            place: null,
             nextDueDate: null,
             factsWritten: 0,
             factsSkipped: 0,
@@ -509,6 +515,8 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
             activityId: null,
             draftId,
             occurredOn: null,
+            promise: null,
+            place: null,
             nextDueDate: null,
             factsWritten: 0,
             factsSkipped: 0,
@@ -580,6 +588,8 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
             activityId: outcome.activityId,
             draftId,
             occurredOn: outcome.sentOn,
+            promise: null,
+            place: null,
             nextDueDate: null,
             factsWritten: 0,
             factsSkipped: 0,

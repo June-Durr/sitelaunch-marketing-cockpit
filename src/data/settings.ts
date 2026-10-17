@@ -7,6 +7,18 @@
 
 import { DEFAULT_PROGRAM, validateProgram, type ProgramConfig } from '../config/program';
 
+/**
+ * How you introduce yourself in a first message.
+ *
+ * Here because the alternative is a message that goes out saying "[Your Name]",
+ * or worse, a name the app made up. Null until somebody says, and a draft that
+ * does not know simply leaves the line out and asks.
+ */
+export interface Introduction {
+  name: string | null;
+  business: string | null;
+}
+
 export interface AppSettings {
   /** Pipeline default view. 'queue' is the one ordered by what is actually due. */
   pipelineView: 'board' | 'table' | 'queue';
@@ -17,12 +29,17 @@ export interface AppSettings {
    * and carried in backups, so restoring brings the same program back with it.
    */
   program: ProgramConfig;
+  /** Used by the assistant's first message, and by nothing else. */
+  introduction: Introduction;
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
   pipelineView: 'queue',
   showCompletedTasks: false,
   program: DEFAULT_PROGRAM,
+  // Not guessed from the signed in email or the app's own name. A wrong
+  // introduction in a message to a stranger is worse than a missing one.
+  introduction: { name: null, business: null },
 };
 
 const SETTINGS_KEY = 'slmc.settings.v1';
@@ -56,6 +73,7 @@ export function coerceSettings(value: unknown): AppSettings {
         : 'queue',
     showCompletedTasks: input.showCompletedTasks === true,
     program: coerceProgram(input.program),
+    introduction: coerceIntroduction(input.introduction),
   };
 }
 
@@ -75,4 +93,13 @@ export function coerceProgram(value: unknown): ProgramConfig {
     goal: typeof input.goal === 'string' && input.goal.trim() ? input.goal : null,
   };
   return validateProgram(candidate) === null ? candidate : { ...DEFAULT_PROGRAM };
+}
+
+/** An introduction from storage or a backup. Blank strings become null. */
+export function coerceIntroduction(value: unknown): Introduction {
+  if (!value || typeof value !== 'object') return { name: null, business: null };
+  const input = value as Partial<Introduction>;
+  const text = (field: unknown): string | null =>
+    typeof field === 'string' && field.trim() !== '' ? field.trim().slice(0, 80) : null;
+  return { name: text(input.name), business: text(input.business) };
 }
