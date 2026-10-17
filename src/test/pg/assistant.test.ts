@@ -68,10 +68,11 @@ describe('a fact has to say who is claiming it', () => {
     ).rejects.toThrow(/provenance/i);
   });
 
-  it('keeps the three kinds of claim apart', async () => {
+  it('keeps the four kinds of claim apart', async () => {
     const leadId = await seedLead(USER_A);
     for (const [provenance, value] of [
       ['contact_stated', 'I need online booking'],
+      ['user_stated', 'I told him I would send examples'],
       ['user_impression', 'friendly but not interested'],
       ['assistant_inferred', 'probably price sensitive'],
     ]) {
@@ -86,7 +87,7 @@ describe('a fact has to say who is claiming it', () => {
       'select provenance from extracted_facts order by provenance',
     );
     expect(stored.map((r) => r.provenance)).toEqual([
-      'assistant_inferred', 'contact_stated', 'user_impression',
+      'assistant_inferred', 'contact_stated', 'user_impression', 'user_stated',
     ]);
   });
 

@@ -8,22 +8,36 @@
  */
 
 /** Who is making a claim. Nothing in the application may promote one to another. */
-export type Provenance = 'contact_stated' | 'user_impression' | 'assistant_inferred';
+export type Provenance =
+  | 'contact_stated' | 'user_stated' | 'user_impression' | 'assistant_inferred';
 
 export type FactKind =
   | 'identity' | 'channel' | 'interest' | 'concern'
   | 'promise' | 'reply' | 'next_step' | 'other';
 
+/**
+ * The label on screen, and the reason each one is worded this way.
+ *
+ * "You said it" and "Your read on it" have to be impossible to confuse,
+ * because one is something that happened and the other is something believed.
+ * The first live capture labelled a promise "Your impression", which is how a
+ * commitment quietly becomes a feeling.
+ */
 export const PROVENANCE_LABELS: Record<Provenance, string> = {
   contact_stated: 'They said it',
-  user_impression: 'Your impression',
+  user_stated: 'You said it',
+  user_impression: 'Your read on it',
   assistant_inferred: 'Worked out from your words',
 };
 
 /** What each one actually means, shown next to the label rather than assumed. */
 export const PROVENANCE_NOTES: Record<Provenance, string> = {
   contact_stated: 'The contact said this themselves, so it is evidence.',
-  user_impression: 'This is your read on it. It may turn out to be wrong.',
+  user_stated:
+    'You reported this as something that happened or was said. Evidence from '
+    + 'your side of it, not a guess and not a feeling.',
+  user_impression:
+    'Your read on them, which the contact did not say. It may turn out to be wrong.',
   assistant_inferred: 'A guess drawn from what you wrote. Check it before relying on it.',
 };
 

@@ -114,7 +114,9 @@ describe('the reply schema is a legal strict schema', () => {
   it('keeps the three enums in step with the database constraints', () => {
     // These same three lists are checked in migration 0016. A fourth provenance
     // added here and not there would be a runtime constraint violation.
-    expect(PROVENANCES).toEqual(['contact_stated', 'user_impression', 'assistant_inferred']);
+    expect(PROVENANCES).toEqual([
+      'contact_stated', 'user_stated', 'user_impression', 'assistant_inferred',
+    ]);
     expect([...FACT_KINDS]).toEqual([
       'identity', 'channel', 'interest', 'concern', 'promise', 'reply', 'next_step', 'other',
     ]);
@@ -151,10 +153,20 @@ describe('the instructions', () => {
   });
 
   it('keeps the three provenances apart in words, not just in the schema', () => {
-    for (const word of ['contact_stated', 'user_impression', 'assistant_inferred']) {
+    for (const word of [
+      'contact_stated', 'user_stated', 'user_impression', 'assistant_inferred',
+    ]) {
       expect(text).toContain(word);
     }
     expect(text.toLowerCase()).toContain('the weaker claim is the right one');
+  });
+
+  it('tells a report apart from an impression in words, not just in the enum', () => {
+    // The failure this fixes: "I told him I would text examples" came back as
+    // user_impression, and the screen called a promise a feeling.
+    expect(text).toContain('"I told him I would send examples" is user_stated');
+    expect(text).toContain('"He seemed keen" is user_impression');
+    expect(text.toLowerCase()).toContain('do not file a report as an impression');
   });
 
   it('allows one question and only when it changes what gets written', () => {

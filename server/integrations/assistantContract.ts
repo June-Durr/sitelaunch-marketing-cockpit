@@ -90,7 +90,17 @@ export const FACT_KINDS = [
   'identity', 'channel', 'interest', 'concern', 'promise', 'reply', 'next_step', 'other',
 ] as const;
 
-export const PROVENANCES = ['contact_stated', 'user_impression', 'assistant_inferred'] as const;
+/**
+ * Who is making a claim. Four values, and the two in the middle are the point.
+ *
+ * A person reporting what they themselves said is stating a fact, not forming
+ * an impression. The first live capture put "I told him I would text examples"
+ * under user_impression, because there was nowhere better for it, and the
+ * screen then called a promise a feeling. See migration 0020.
+ */
+export const PROVENANCES = [
+  'contact_stated', 'user_stated', 'user_impression', 'assistant_inferred',
+] as const;
 
 export const INTENTS = ['capture', 'record', 'draft', 'answer', 'clarify'] as const;
 
@@ -203,8 +213,10 @@ export const REPLY_SCHEMA: Record<string, unknown> = {
             type: 'string',
             enum: [...PROVENANCES],
             description:
-              'contact_stated: they said it. user_impression: the user formed this '
-              + 'view. assistant_inferred: you worked it out. Never promote one to another.',
+              'contact_stated: the contact said it. user_stated: the user says they '
+              + 'did or said it, which is a fact they are reporting. user_impression: '
+              + 'the user read it off the contact and may be wrong. assistant_inferred: '
+              + 'you worked it out. Never promote one to another.',
           },
           source_excerpt: {
             ...nullableString,
@@ -255,12 +267,19 @@ export function buildInstructions(context: AssistantContext): string {
     'Do not use a contact id that is not in the context below.',
     '',
     'PROVENANCE, WHICH IS THE POINT',
-    'Every fact carries who is making the claim.',
-    'contact_stated is what the contact themselves said. It is evidence.',
-    'user_impression is what the person using the Cockpit thinks. It may be wrong.',
+    'Every fact carries who is making the claim, and there are four kinds.',
+    'contact_stated is what the contact themselves said. Evidence from their side.',
+    'user_stated is what the person using the Cockpit says they did or said, or what',
+    'they say happened. "I told him I would send examples" is user_stated. So is',
+    'their own phone number for the contact, and anything they report as fact.',
+    'Evidence from their side. It is not a guess and it is not a feeling.',
+    'user_impression is the person reading something off the contact that the',
+    'contact did not say. "He seemed keen" is user_impression. It may be wrong.',
     'assistant_inferred is what you worked out. It is a guess, and it must quote the',
     'words you worked it out from in source_excerpt.',
-    'When in doubt, the weaker claim is the right one.',
+    'The line that matters: something somebody asserts happened is not the same as',
+    'something somebody believes is true. Do not file a report as an impression.',
+    'When genuinely in doubt between the last two, the weaker claim is the right one.',
     '',
     'ASKING',
     'At most one question per reply, and only when the answer changes what gets',

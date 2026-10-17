@@ -20,7 +20,7 @@ import { Link } from 'react-router-dom';
 import { Field, Tag } from '../components/primitives';
 import { useData } from '../data/context';
 import { leadLabel } from '../lib/leadLabel';
-import { nextFollowUpDate } from '../config/followUp';
+import { FOLLOW_UP_CADENCE_DAYS, nextFollowUpDate } from '../config/followUp';
 import { formatDay, today } from '../lib/dates';
 import {
   FACT_KIND_LABELS, PROVENANCE_LABELS, PROVENANCE_NOTES,
@@ -53,8 +53,19 @@ function FactList({
 }) {
   if (facts.length === 0) return null;
 
-  const tone = (provenance: Provenance) =>
-    provenance === 'contact_stated' ? 'violet' : provenance === 'user_impression' ? 'quiet' : 'amber';
+  /**
+   * A gradient of certainty, strongest first.
+   *
+   * violet for what the contact said, plain for what the person reports, quiet
+   * for what they reckon, amber for what a model guessed. Colour is never the
+   * only signal: the label beside it says the same thing in words.
+   */
+  const tone = (provenance: Provenance): 'violet' | 'default' | 'quiet' | 'amber' => {
+    if (provenance === 'contact_stated') return 'violet';
+    if (provenance === 'user_stated') return 'default';
+    if (provenance === 'user_impression') return 'quiet';
+    return 'amber';
+  };
 
   return (
     <div className="asst-facts">
@@ -279,13 +290,46 @@ function CaptureCard({ turn }: { turn: AssistantTurn }) {
   const [metOn, setMetOn] = useState(person.metOn ?? conversation.occurredOn ?? '');
   const [interest, setInterest] = useState(person.interest ?? '');
   const [nextAction, setNextAction] = useState(conversation.nextAction ?? '');
-  // The rule decides this, not the assistant. The assistant's date is used only
-  // when the person actually named one.
+
+  /*
+   * Where the follow-up date comes from, and saying so.
+   *
+   * Three different things can put a date in this box and they are not the same
+   * claim. The person may have named one. The Cockpit's cadence rule may have
+   * suggested one, which for a new contact is thirty days and has nothing to do
+   * with this particular person. Or they may have typed one just now.
+   *
+   * The first live capture showed why this matters: a promise to text examples
+   * came with a suggested date a month out, and nothing on screen said the
+   * month was a default rather than a reading of what was said.
+   */
+  const cadence = FOLLOW_UP_CADENCE_DAYS.new_contact;
   const ruleDate = nextFollowUpDate('new_contact', today());
-  const [nextDueDate, setNextDueDate] = useState(conversation.nextDueDate ?? ruleDate ?? '');
+  const stated = conversation.nextDueDate;
+  const [nextDueDate, setNextDueDate] = useState(stated ?? ruleDate ?? '');
+  const [datePicked, setDatePicked] = useState(false);
   const [keep, setKeep] = useState<boolean[]>(proposal.facts.map(() => true));
 
-  const fromRule = conversation.nextDueDate === null && nextDueDate === ruleDate;
+  const dateSource: 'you' | 'rule' | 'edited' = datePicked
+    ? 'edited'
+    : stated !== null
+      ? 'you'
+      : 'rule';
+
+  const dateLabel = {
+    you: 'Next follow-up, from what you said',
+    rule: 'Next follow-up, suggested',
+    edited: 'Next follow-up, your date',
+  }[dateSource];
+
+  const dateHint = {
+    you: 'You named this day, so it was not changed.',
+    rule:
+      `Nobody named a day, so the Cockpit's own rhythm for a new contact put it `
+      + `${cadence} days out. It is not a reading of anything you said. Change it `
+      + 'if you meant sooner, or clear it for no follow-up.',
+    edited: 'Yours, and it is what will be saved.',
+  }[dateSource];
 
   return (
     <div className="asst-card">
@@ -321,14 +365,15 @@ function CaptureCard({ turn }: { turn: AssistantTurn }) {
             onChange={(event) => setNextAction(event.target.value)}
           />
         </Field>
-        <Field
-          label="Next follow-up"
-          hint={fromRule ? 'Picked by the follow-up rule for a new contact.' : undefined}
-        >
+        <Field label={dateLabel} hint={dateHint}>
           <input
             type="date"
+            className={dateSource === 'rule' ? 'asst-suggested' : undefined}
             value={nextDueDate}
-            onChange={(event) => setNextDueDate(event.target.value)}
+            onChange={(event) => {
+              setDatePicked(true);
+              setNextDueDate(event.target.value);
+            }}
           />
         </Field>
       </div>

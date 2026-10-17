@@ -282,6 +282,36 @@ describe('facts that would be dishonest', () => {
     expect(facts.map((f) => f.provenance)).toEqual(['contact_stated']);
   });
 
+  it('keeps a promise the user reported as a report, not as an impression', async () => {
+    // The live capture that found this: "Told him I would text examples" is a
+    // thing that happened, and it needs no excerpt because the person saying it
+    // is the source.
+    const result = await t.asUser(USER_A, () =>
+      capture({
+        token: 'capture-user-stated',
+        name: 'Invented Promisee',
+        facts: [
+          {
+            kind: 'promise',
+            value: 'I said I would text him examples',
+            provenance: 'user_stated',
+            sourceExcerpt: null,
+            occurredOn: null,
+          },
+        ],
+      }));
+
+    expect(result.facts_written).toBe(1);
+    expect(result.facts_skipped).toBe(0);
+
+    const facts = await rows<{ provenance: string; source_excerpt: string | null }>(
+      'select provenance, source_excerpt from extracted_facts where lead_id = $1',
+      [result.lead_id],
+    );
+    expect(facts[0].provenance).toBe('user_stated');
+    expect(facts[0].source_excerpt).toBeNull();
+  });
+
   it('leaves out an unknown kind or provenance rather than failing the whole save', async () => {
     const result = await t.asUser(USER_A, () =>
       capture({

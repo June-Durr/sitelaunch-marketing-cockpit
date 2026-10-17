@@ -1594,3 +1594,20 @@ table.data td.num { white-space: nowrap; }
   .asst-summary > div { grid-template-columns: 1fr; gap: 0.1rem; }
   .asst-launcher { right: 0.75rem; bottom: 0.75rem; }
 }
+
+/*
+  A suggested value, marked as one.
+
+  Dashed rather than solid, and the label beside it says "suggested" in words,
+  because a date the Cockpit guessed and a date somebody meant must not look
+  identical. Colour is not doing the work here: the border style and the label
+  both change.
+*/
+.asst-suggested {
+  border-style: dashed;
+  color: var(--ink-2);
+}
+.asst-suggested:focus {
+  border-style: solid;
+  color: var(--charcoal);
+}

@@ -76,8 +76,14 @@ export interface ProposedFact {
     | 'identity' | 'channel' | 'interest' | 'concern'
     | 'promise' | 'reply' | 'next_step' | 'other';
   value: string;
-  /** Who is making the claim. Nothing in the app may promote one to another. */
-  provenance: 'contact_stated' | 'user_impression' | 'assistant_inferred';
+  /**
+   * Who is making the claim. Nothing in the app may promote one to another.
+   *
+   * user_stated and user_impression are both the person speaking, and they are
+   * not the same claim: the first is what they say happened, the second is what
+   * they believe about the contact. See migration 0020.
+   */
+  provenance: 'contact_stated' | 'user_stated' | 'user_impression' | 'assistant_inferred';
   sourceExcerpt: string | null;
   occurredOn: string | null;
 }

@@ -43,7 +43,8 @@ const sqlWithoutTokenStore = readdirSync(dir)
       !f.startsWith('0016_') &&
       !f.startsWith('0017_') &&
       !f.startsWith('0018_') &&
-      !f.startsWith('0019_'),
+      !f.startsWith('0019_') &&
+      !f.startsWith('0020_'),
   )
   .map((f) => sqlFor(f))
   .join('\n');
@@ -449,6 +450,27 @@ describe('the assistant writes through the owner, never around them', () => {
     );
     expect(column).toContain("check (provenance in (");
     expect(column).not.toContain('default');
+  });
+
+  it('keeps the four sources of a fact in one place', () => {
+    // 0020 moved the list into a function so the table constraint and every
+    // validation path cannot drift apart. A fifth value is one line.
+    const fourth = sqlFor('0020_user_stated_provenance.sql');
+    expect(fourth).toContain('create or replace function fact_provenance_allowed');
+    expect(fourth).toContain("'contact_stated', 'user_stated', 'user_impression', 'assistant_inferred'");
+    expect(fourth).toContain('check (fact_provenance_allowed(provenance))');
+    // And capture_contact validates through the same function rather than its
+    // own copy of the list.
+    expect(fourth).toContain('or not fact_provenance_allowed(v_provenance)');
+    expect(fourth).not.toContain("v_provenance not in ('contact_stated'");
+  });
+
+  it('still makes only a model guess show its working', () => {
+    // A person reporting what they said does not have to prove it. Only
+    // assistant_inferred needs an excerpt, and that constraint is untouched.
+    expect(foundation).toContain('inferred_facts_show_their_source');
+    expect(sqlFor('0020_user_stated_provenance.sql'))
+      .not.toContain('inferred_facts_show_their_source');
   });
 
   it('stores nothing that could hold a credential', () => {

@@ -19,6 +19,8 @@ import { MemoryRouter } from 'react-router-dom';
 import { AssistantLauncher, AssistantPanel } from '../assistant/AssistantPanel';
 import { AssistantProvider } from '../assistant/AssistantProvider';
 import type { AssistantAnswer, AssistantProposal } from '../assistant/wire';
+import { FOLLOW_UP_CADENCE_DAYS } from '../config/followUp';
+import { addDays, today } from '../lib/dates';
 import { DataContext, type DataContextValue } from '../data/context';
 import { EMPTY_DATASET, type CaptureOutcome, type DraftOutcome } from '../data/repository';
 import type { Dataset } from '../types/domain';
@@ -261,13 +263,96 @@ describe('describing somebody you met', () => {
     expect(screen.getByText(/From your words: his partner handles the money/)).toBeTruthy();
   });
 
+  it('labels every fact with who is claiming it, and never mislabels a report', async () => {
+    // The live capture that found this: a promise the user reported was shown
+    // as "Your impression". Four sources, four labels, no overlap.
+    harness({
+      reply: answer({
+        proposal: proposal({
+          facts: [
+            {
+              kind: 'interest', value: 'Wants a one page site',
+              provenance: 'contact_stated', sourceExcerpt: 'wants a one page site',
+              occurredOn: null,
+            },
+            {
+              kind: 'promise', value: 'I said I would text him examples',
+              provenance: 'user_stated', sourceExcerpt: null, occurredOn: null,
+            },
+            {
+              kind: 'interest', value: 'He seemed keen',
+              provenance: 'user_impression', sourceExcerpt: null, occurredOn: null,
+            },
+            {
+              kind: 'concern', value: 'His partner decides',
+              provenance: 'assistant_inferred',
+              sourceExcerpt: 'his partner handles the money', occurredOn: null,
+            },
+          ],
+        }),
+      }),
+    });
+    await ask('Met somebody and told him I would text examples');
+
+    await waitFor(() => expect(screen.getByText('They said it')).toBeTruthy());
+    expect(screen.getByText('You said it')).toBeTruthy();
+    expect(screen.getByText('Your read on it')).toBeTruthy();
+    expect(screen.getByText('Worked out from your words')).toBeTruthy();
+    // The wrong label is nowhere near the reported promise.
+    expect(screen.queryByText('Your impression')).toBeNull();
+  });
+
+  it('says a suggested follow-up is a suggestion, and whose rhythm it is', async () => {
+    harness({});
+    await ask('Met Eddie at the mixer');
+
+    await waitFor(() =>
+      expect(screen.getByLabelText(/^Next follow-up, suggested/)).toBeTruthy());
+    expect(screen.getByText(/Nobody named a day/)).toBeTruthy();
+    expect(screen.getByText(/30 days out/)).toBeTruthy();
+    expect(screen.getByText(/not a reading of anything you said/)).toBeTruthy();
+  });
+
+  it('stops calling the date a suggestion once it is changed', async () => {
+    harness({});
+    await ask('Met Eddie at the mixer');
+    await waitFor(() => expect(screen.getByLabelText(/^Next follow-up, suggested/)).toBeTruthy());
+
+    fireEvent.change(screen.getByLabelText(/^Next follow-up, suggested/), {
+      target: { value: '2026-10-20' },
+    });
+
+    expect(screen.getByLabelText(/^Next follow-up, your date/)).toBeTruthy();
+    expect(screen.queryByText(/Nobody named a day/)).toBeNull();
+  });
+
+  it('says a date came from what you said when the model picked one up', async () => {
+    harness({
+      reply: answer({
+        proposal: proposal({
+          conversation: {
+            occurredOn: '2026-10-16', summary: 'Met at the mixer', channel: 'in person',
+            outcome: null, nextAction: 'Text examples', nextDueDate: '2026-10-20',
+          },
+        }),
+      }),
+    });
+    await ask('Met Eddie, texting him examples on Tuesday');
+
+    await waitFor(() =>
+      expect(screen.getByLabelText(/^Next follow-up, from what you said/)).toBeTruthy());
+    expect(screen.getByText(/You named this day/)).toBeTruthy();
+  });
+
   it('fills the follow-up date from the rule rather than from the model', async () => {
     harness({});
     await ask('Met Eddie at the mixer');
     await waitFor(() => expect(screen.getByLabelText(/^Next follow-up/)).toBeTruthy());
+
     const field = screen.getByLabelText(/^Next follow-up/) as HTMLInputElement;
-    expect(field.value).not.toBe('');
-    expect(screen.getByText(/Picked by the follow-up rule for a new contact/)).toBeTruthy();
+    // Thirty days from today, which is FOLLOW_UP_CADENCE_DAYS.new_contact and
+    // the only place that decision is made.
+    expect(field.value).toBe(addDays(today(), FOLLOW_UP_CADENCE_DAYS.new_contact!));
   });
 
   it('saves only the facts that were left ticked', async () => {
