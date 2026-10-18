@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Assistant flows, browser QA</title>
+    <!--
+      Not part of the application.
+
+      Vite's dev server will serve any file under the project root, and the
+      production build only ever reads index.html, so this page exists for the
+      dev server and never ships. It mounts the assistant panel against stubbed
+      adapters so the two contact flows can be looked at in a real browser at
+      real viewport sizes, which is the one thing jsdom cannot tell us: it has
+      no layout, so it cannot show a message box overflowing a phone screen.
+
+      Every record here is invented and nothing can reach a network: the stub
+      answers in place of the model and in place of the database.
+    -->
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/qa/assistant-flows.tsx"></script>
+  </body>
+</html>

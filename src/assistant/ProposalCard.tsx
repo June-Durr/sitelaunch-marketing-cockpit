@@ -397,7 +397,13 @@ function CaptureCard({ turn }: { turn: AssistantTurn }) {
           onClick={() =>
             void saveContact(turn.id, {
               name, organization, channel, handle, metOn, interest,
-              nextAction, nextDueDate: plan.date, firstMessage: plan.body, keepFacts: keep,
+              nextAction,
+              nextDueDate: plan.date,
+              // The capture card always offers a date, so an empty one here is
+              // somebody having cleared it on purpose.
+              clearedSuggestion: plan.date === '',
+              firstMessage: plan.body,
+              keepFacts: keep,
             })
           }
         >
@@ -428,13 +434,29 @@ function TouchCard({ turn }: { turn: AssistantTurn }) {
   const lead = data.leads.find((candidate) => candidate.id === leadId);
   const [handle, setHandle] = useState(proposal.person.handle ?? lead?.phone ?? lead?.email ?? '');
   const [contactChannel, setContactChannel] = useState(proposal.person.channel ?? lead?.preferred_channel ?? '');
-  const hasNextMessage = Boolean(conversation.place || nextAction.trim());
+  /*
+   * A matched contact gets the same handoff a new one does.
+   *
+   * The message is always offered, because the point of recording a
+   * conversation is usually that something follows it, and a message with
+   * little to say reports its own gaps rather than pretending.
+   *
+   * The date is a separate question. A suggestion is only offered when there is
+   * something to fulfil: recording a conversation from last week must not drag
+   * a follow-up to today, so with no next action the field stays blank and the
+   * Cockpit's ordinary cadence decides, exactly as before.
+   */
+  const suggestsDate = nextAction.trim() !== '';
   const plan = useContactPlan({
     name: lead?.prospect_name ?? proposal.person.name,
-    metWhere: conversation.place, metOn: occurredOn || null,
-    promise: nextAction || null, statedDate: conversation.nextDueDate,
-    suggest: hasNextMessage,
-    repliesRecorded: data.activityEvents.filter((event) => event.lead_id === leadId && event.activity_type === 'reply_received').length,
+    metWhere: conversation.place,
+    metOn: occurredOn || null,
+    promise: nextAction || null,
+    statedDate: conversation.nextDueDate,
+    suggest: suggestsDate,
+    repliesRecorded: data.activityEvents.filter(
+      (event) => event.lead_id === leadId && event.activity_type === 'reply_received',
+    ).length,
   });
 
   if (!leadId) {
@@ -488,12 +510,14 @@ function TouchCard({ turn }: { turn: AssistantTurn }) {
           />
         </Field>
         <Field
-          label={hasNextMessage ? plan.dateLabel : 'Next follow-up'}
-          hint={hasNextMessage ? plan.dateHint : 'Leave this blank if no date was agreed.'}
+          label={suggestsDate ? plan.dateLabel : 'Next follow-up'}
+          hint={suggestsDate
+            ? plan.dateHint
+            : 'Blank leaves it to the usual rhythm for their stage.'}
         >
           <input
             type="date"
-            className={hasNextMessage && plan.suggested ? 'asst-suggested' : undefined}
+            className={suggestsDate && plan.suggested ? 'asst-suggested' : undefined}
             value={plan.date}
             onChange={(event) => plan.setDate(event.target.value)}
           />
@@ -508,7 +532,10 @@ function TouchCard({ turn }: { turn: AssistantTurn }) {
             void saveTouch(turn.id, {
               leadId, occurredOn, summary, channel, outcome, nextAction,
               nextDueDate: plan.date,
-              firstMessage: hasNextMessage ? plan.body : undefined,
+              // Only a suggestion that was offered and then emptied counts as
+              // cleared. A field that was never filled means "use the rhythm".
+              clearedSuggestion: suggestsDate && plan.date === '',
+              firstMessage: plan.body,
               handle, contactChannel,
             })
           }
@@ -516,7 +543,7 @@ function TouchCard({ turn }: { turn: AssistantTurn }) {
           Record this
         </button>
       </div>
-      {hasNextMessage ? <ContactPlan plan={plan} /> : null}
+      <ContactPlan plan={plan} />
     </div>
   );
 }
@@ -679,4 +706,3 @@ export function ProposalCard({ turn }: { turn: AssistantTurn }) {
       return <AnswerLinks turn={turn} />;
   }
 }
-

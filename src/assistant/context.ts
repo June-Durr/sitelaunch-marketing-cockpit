@@ -119,6 +119,15 @@ export interface AssistantValue {
 /** The capture card's fields, as the person left them. */
 export interface ContactEdit {
   firstMessage?: string;
+  /**
+   * True when a date was offered and the person emptied it.
+   *
+   * Blank means two different things and they need opposite handling. A field
+   * nobody filled means "use the usual rhythm", which the database function
+   * already does with a null. A suggestion somebody deliberately cleared means
+   * "no follow-up", which takes an explicit write.
+   */
+  clearedSuggestion?: boolean;
   name: string;
   organization: string;
   channel: string;
@@ -133,6 +142,8 @@ export interface ContactEdit {
 
 export interface TouchEdit {
   firstMessage?: string;
+  /** See ContactEdit. Blank and cleared are not the same instruction. */
+  clearedSuggestion?: boolean;
   handle?: string;
   contactChannel?: string;
   leadId: string;
@@ -182,4 +193,3 @@ export function formatCost(micros: number): string {
   if (dollars < 0.01) return 'under a cent';
   return `$${dollars.toFixed(2)}`;
 }
-

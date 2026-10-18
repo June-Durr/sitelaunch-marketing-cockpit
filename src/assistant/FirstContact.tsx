@@ -124,16 +124,30 @@ export function FirstContact(props: FirstContactProps) {
     props.onReminderSaved?.(selectedReminder || null);
     setReminderError(null);
     setSyncState('Follow-up saved. Calendar and tracking sync queued.');
-    if (ctx.drainSyncJobs) {
-      try {
-        const result = await ctx.drainSyncJobs();
-        const pending = ctx.loadSyncPending ? await ctx.loadSyncPending() : null;
-        setSyncState(result.failed > 0 ? 'Follow-up saved. A sync failed and needs a retry.'
-          : pending && !pending.calendar && !pending.leadMirror ? 'Follow-up saved. Calendar and tracking synced.'
-          : 'Follow-up saved. Calendar and tracking sync queued; completion is not yet confirmed.');
-      } catch {
-        setSyncState('Follow-up saved. Calendar and tracking sync could not be confirmed.');
+    if (!ctx.drainSyncJobs) return;
+
+    /*
+     * What the sync actually did, asked rather than assumed.
+     *
+     * Three different outcomes and they are not interchangeable: something
+     * failed, the queue is empty so everything landed, or the work is still
+     * outstanding. Only the middle one may be called synced.
+     */
+    try {
+      const result = await ctx.drainSyncJobs();
+      const pending = ctx.loadSyncPending ? await ctx.loadSyncPending() : null;
+      if (result.failed > 0) {
+        setSyncState('Follow-up saved. A sync failed and needs a retry.');
+      } else if (pending && !pending.calendar && !pending.leadMirror) {
+        setSyncState('Follow-up saved. Calendar and tracking synced.');
+      } else {
+        setSyncState(
+          'Follow-up saved. Calendar and tracking sync queued; completion is not '
+          + 'yet confirmed.',
+        );
       }
+    } catch {
+      setSyncState('Follow-up saved. Calendar and tracking sync could not be confirmed.');
     }
   };
 
@@ -472,4 +486,3 @@ export function FirstContact(props: FirstContactProps) {
     </div>
   );
 }
-

@@ -4,11 +4,31 @@ import { today, formatDay } from '../lib/dates';
 import { suggestAfterSend } from './followUpSuggestion';
 import type { useContactPlan } from './useContactPlan';
 
+/**
+ * The message and the plan around it, before anything has been saved.
+ *
+ * Shown in the review card so one Ask produces the whole picture: who they are,
+ * what to send, when the first action is due, and what has and has not been
+ * recorded yet. Rendering it writes nothing and asks no model anything.
+ */
 export function ContactPlan({ plan }: { plan: ReturnType<typeof useContactPlan> }) {
   const [copyState, setCopyState] = useState<string | null>(null);
   const [introName, setIntroName] = useState(plan.introduction.name ?? '');
   const [introBusiness, setIntroBusiness] = useState(plan.introduction.business ?? '');
-  const after = suggestAfterSend({ sentOn: plan.date || today(), body: plan.body, repliesRecorded: plan.repliesRecorded, statedDate: null });
+
+  /*
+   * The check-in is counted from the day this would be sent, which is today.
+   *
+   * Not from plan.date. That is when the first action is due, and the two only
+   * coincide when the action is also today: with an action set for Friday, a
+   * check-in counted from Friday is describing something else entirely.
+   */
+  const after = suggestAfterSend({
+    sentOn: today(),
+    body: plan.body,
+    repliesRecorded: plan.repliesRecorded,
+    statedDate: null,
+  });
   return (
     <section className="asst-first" aria-label="Message and follow-up plan">
       <p className="asst-first-head">Your message, ready now. Nothing has been sent.</p>

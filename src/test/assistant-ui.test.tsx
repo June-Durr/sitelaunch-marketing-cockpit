@@ -932,6 +932,67 @@ describe('one input produces the complete contact-to-message plan', () => {
     expect(calls.sent).toEqual([]);
   });
 
+  it('still offers the message for a matched contact with nothing promised', async () => {
+    // The message is always part of the handoff. What changes without a
+    // promise is the date: there is nothing owed, so nothing is suggested.
+    const { calls } = harness({
+      reply: answer({
+        proposal: proposal({
+          intent: 'record',
+          leadId: 'l-jamie',
+          conversation: {
+            occurredOn: '2026-10-12', place: 'the market',
+            summary: 'Ran into her at the market', channel: 'in person',
+            outcome: null, nextAction: null, nextDueDate: null,
+          },
+          facts: [],
+        }),
+      }),
+    });
+    await ask('Ran into Chef Jamie at the market on Monday');
+
+    await waitFor(() => expect(screen.getByLabelText('The first message')).toBeTruthy());
+    // Blank, and left to the ordinary rhythm rather than dragged to today.
+    // Not "Next follow-up, suggested": the plain label is the unsuggested one.
+    const field = screen.getByLabelText(/^Next follow-up(?!,)/) as HTMLInputElement;
+    expect(field.value).toBe('');
+    expect(screen.getByText(/usual rhythm for their stage/)).toBeTruthy();
+
+    fireEvent.click(screen.getByText('Record this'));
+    await waitFor(() => expect(calls.touch).toHaveLength(1));
+    expect(calls.touch[0].nextDueDate).toBeNull();
+  });
+
+  it('leaves a date nobody was offered alone, rather than clearing it', async () => {
+    /*
+     * The distinction that matters. An empty field somebody never saw a
+     * suggestion in means "use the usual rhythm", which the database function
+     * already does with a null. Writing an explicit null there would silently
+     * cancel a follow-up nobody asked to cancel.
+     */
+    const { calls } = harness({
+      reply: answer({
+        proposal: proposal({
+          intent: 'record',
+          leadId: 'l-jamie',
+          conversation: {
+            occurredOn: '2026-10-12', place: null, summary: 'Spoke briefly',
+            channel: 'phone', outcome: null, nextAction: null, nextDueDate: null,
+          },
+          facts: [],
+        }),
+      }),
+    });
+    await ask('Spoke to Chef Jamie briefly on Monday');
+    await waitFor(() => expect(screen.getByText('Record this')).toBeTruthy());
+
+    fireEvent.click(screen.getByText('Record this'));
+    await waitFor(() => expect(calls.touch).toHaveLength(1));
+
+    // No second write to the lead to null its date.
+    expect(calls.updates.filter((u) => 'next_action_date' in u.patch)).toEqual([]);
+  });
+
   it('keeps an explicitly selected reminder and records one send even after a double press', async () => {
     const { calls } = harness({});
     await ask('Met someone; promised examples.');

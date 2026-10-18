@@ -42,3 +42,6 @@ supabase/.temp/
 # Google service account key. Read once to set a function secret, never committed.
 .google-service-account.json
 *service-account*.json
+
+# Screenshots from the browser QA script. Evidence, not source.
+qa-screens/

@@ -197,6 +197,42 @@ describe('composing the first message', () => {
     expect(gaps.join(' ')).toContain('how you introduce yourself');
   });
 
+  it('runs the greeting on in lower case when there is no introduction', () => {
+    // "Hi ZZ, Good to meet you" reads like two half sentences stuck together.
+    const { body } = composeFirstMessage({
+      contactName: 'ZZ Test Harness',
+      introduction: { name: null, business: null },
+      metWhere: 'the chamber mixer',
+      metOn: '2026-10-16',
+      today: TODAY,
+      promise: 'text him examples',
+    });
+    expect(body).toContain('Hi ZZ, good to meet you at the chamber mixer yesterday.');
+    expect(body).not.toContain('Hi ZZ, Good');
+  });
+
+  it('starts a fresh sentence after an introduction, which is a whole one', () => {
+    const { body } = composeFirstMessage({
+      contactName: 'ZZ Test Harness',
+      introduction: { name: 'Invented Sender', business: null },
+      metWhere: 'the mixer',
+      metOn: '2026-10-16',
+      today: TODAY,
+      promise: null,
+    });
+    expect(body).toContain('. Good to meet you at the mixer yesterday.');
+  });
+
+  it('runs on to the promise when that is the only thing after the greeting', () => {
+    const { body } = composeFirstMessage({
+      contactName: 'ZZ Test Harness',
+      introduction: { name: null, business: null },
+      metWhere: null, metOn: null, today: TODAY,
+      promise: 'send examples',
+    });
+    expect(body).toContain('Hi ZZ, I said I would send examples');
+  });
+
   it('drops the business from the introduction when there is not one', () => {
     const { body } = composeFirstMessage({
       contactName: 'ZZ Test Harness',

@@ -91,25 +91,42 @@ export function composeFirstMessage(input: FirstMessageInput): FirstMessageDraft
    * reported. Inventing a name is the one thing this must never do, and
    * "[Your Name]" going out in a real text message is worse than inventing one.
    */
+  /*
+   * Whether the greeting is still waiting for the rest of its sentence.
+   *
+   * With an introduction, "Hi ZZ, it's Alberto from SiteLaunch." is a complete
+   * sentence and what follows starts a new one. Without one the greeting ends
+   * on a comma, and the next line has to continue it in lower case: "Hi ZZ,
+   * Good to meet you" reads like two half sentences stuck together.
+   */
+  let greetingOpen = false;
+
   if (who !== '') {
     const intro = where === '' ? `it's ${who}` : `it's ${who} from ${where}`;
     sentences.push(first ? `Hi ${first}, ${intro}.` : `Hi, ${intro}.`);
   } else {
     sentences.push(first ? `Hi ${first},` : 'Hi,');
+    greetingOpen = true;
     gaps.push(
       'This does not say who it is from, because the Cockpit has not been told '
       + 'how you introduce yourself. Add it below and the line writes itself.',
     );
   }
 
+  /** Continue the greeting in lower case, or start a sentence of its own. */
+  const add = (sentence: string) => {
+    sentences.push(greetingOpen ? lowerFirst(sentence) : sentence);
+    greetingOpen = false;
+  };
+
   const when = whenWeMet(input.metOn, input.today);
   const place = (input.metWhere ?? '').trim();
   if (place !== '' && when !== null) {
-    sentences.push(`Good to meet you at ${place} ${when}.`);
+    add(`Good to meet you at ${place} ${when}.`);
   } else if (place !== '') {
-    sentences.push(`Good to meet you at ${place}.`);
+    add(`Good to meet you at ${place}.`);
   } else if (when !== null) {
-    sentences.push(`Good to meet you ${when}.`);
+    add(`Good to meet you ${when}.`);
   } else {
     gaps.push(
       'It does not say where or when you met, because neither was recorded. '
@@ -126,7 +143,7 @@ export function composeFirstMessage(input: FirstMessageInput): FirstMessageDraft
    */
   const promise = (input.promise ?? '').trim().replace(/\.$/, '');
   if (promise !== '') {
-    sentences.push(`I said I would ${lowerFirst(promise)}, so I wanted to follow through on that.`);
+    add(`I said I would ${lowerFirst(promise)}, so I wanted to follow through on that.`);
   } else {
     gaps.push(
       'Nothing was recorded that you promised them, so this message asks for '

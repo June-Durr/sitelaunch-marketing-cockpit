@@ -314,10 +314,17 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
     }
   }, [repoSaveDraft]);
 
-  // The legacy RPC treats null as "keep/use cadence". An explicitly cleared
-  // first-action date is different and must remove the resulting reminder.
-  const clearFirstAction = useCallback(async (leadId: string | null, due: string, body?: string) => {
-    if (!leadId || due !== '' || body === undefined) return null;
+  /**
+   * Remove a follow-up date the person cleared on purpose.
+   *
+   * capture_contact and record_conversation both treat a null date as "leave
+   * whatever is there and let the rhythm decide", which is right for a field
+   * nobody filled in. It is wrong for a suggestion somebody looked at and
+   * emptied: that is an instruction to schedule nothing, and it takes a write
+   * of its own. The card tells the two apart; see ContactEdit.
+   */
+  const clearFirstAction = useCallback(async (leadId: string | null, cleared?: boolean) => {
+    if (!leadId || cleared !== true) return null;
     try {
       await update('leads', leadId, { next_action_date: null });
       return null;
@@ -384,7 +391,7 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
 
         if (outcome.leadId) setFocusLeadId(outcome.leadId);
         const keptMessage = await keepInitialMessage(outcome.leadId, edited.firstMessage);
-        const clearError = await clearFirstAction(outcome.leadId, edited.nextDueDate, edited.firstMessage);
+        const clearError = await clearFirstAction(outcome.leadId, edited.clearedSuggestion);
         const saved: SavedRecord = {
           kind: 'contact',
           leadId: outcome.leadId,
@@ -397,7 +404,11 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
           promise: edited.nextAction.trim() === '' ? null : edited.nextAction.trim(),
           firstMessage: edited.firstMessage,
           place: turn.proposal.conversation.place,
-          nextDueDate: edited.nextDueDate === '' && !clearError && edited.firstMessage !== undefined ? null : outcome.nextDueDate,
+          // Null only when the clear actually landed. A failed clear means the
+          // date may still stand, and the screen must not say otherwise.
+          nextDueDate: edited.clearedSuggestion === true && clearError === null
+            ? null
+            : outcome.nextDueDate,
           factsWritten: outcome.factsWritten,
           factsSkipped: outcome.factsSkipped,
           reused: outcome.reused,
@@ -442,7 +453,7 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
         const lead = leads.find((candidate) => candidate.id === edited.leadId);
         const keptMessage = await keepInitialMessage(edited.leadId, edited.firstMessage);
         const handleError = await keepTouchHandle(edited.leadId, edited.handle, edited.contactChannel);
-        const clearError = await clearFirstAction(edited.leadId, edited.nextDueDate, edited.firstMessage);
+        const clearError = await clearFirstAction(edited.leadId, edited.clearedSuggestion);
         patchTurn(turnId, {
           saved: {
             kind: 'touch',
@@ -454,7 +465,9 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
             promise: edited.nextAction.trim() === '' ? null : edited.nextAction.trim(),
             place: proposal?.conversation.place ?? null,
             firstMessage: edited.firstMessage,
-            nextDueDate: edited.nextDueDate === '' && !clearError && edited.firstMessage !== undefined ? null : outcome.nextDueDate,
+            nextDueDate: edited.clearedSuggestion === true && clearError === null
+              ? null
+              : outcome.nextDueDate,
             factsWritten: 0,
             factsSkipped: 0,
             reused: outcome.reused,
@@ -776,4 +789,3 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
 
   return <AssistantContext.Provider value={value}>{children}</AssistantContext.Provider>;
 }
-
