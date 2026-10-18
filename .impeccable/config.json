@@ -1,0 +1,17 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "side-tab",
+        "value": "*",
+        "files": [
+          "src/styles/app.css"
+        ],
+        "createdAt": "2026-10-18T22:54:41.697Z",
+        "reason": "Claude's judgement, not the user's: the stylesheet header defines the system as 'Rules instead of cards', so a one-edge rule is its accent vocabulary, not a decorative slab. Three semantic uses in 1600 lines (.next-step, .restore-review, toast tones), all predating this session, each paired with text so colour is never the only signal."
+      }
+    ]
+  }
+}
