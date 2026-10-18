@@ -993,6 +993,128 @@ describe('one input produces the complete contact-to-message plan', () => {
     expect(calls.updates.filter((u) => 'next_action_date' in u.patch)).toEqual([]);
   });
 
+  it('shows the message for a matched contact after saving, with no second Ask', async () => {
+    /*
+     * The bug Alberto hit against the deployed assistant on 2026-10-18. One
+     * Ask matched an existing contact and recorded the conversation, and then
+     * the message was not there: he had to ask a second time to get it. The
+     * saved card only offered the message for a newly created contact, so a
+     * matched one fell straight through it.
+     *
+     * The proposal here carries no place and no next action, which is the
+     * thinnest shape a real match comes back in, and the shape that used to
+     * skip the message entirely.
+     */
+    const { calls, value } = harness({
+      reply: answer({
+        proposal: proposal({
+          intent: 'record',
+          leadId: 'l-jamie',
+          conversation: {
+            occurredOn: '2026-10-17', place: null, summary: 'Caught up briefly',
+            channel: 'phone', outcome: null, nextAction: null, nextDueDate: null,
+          },
+          facts: [],
+        }),
+      }),
+    });
+    await ask('Spoke to Chef Jamie yesterday');
+
+    // Before saving: the message is already there.
+    await waitFor(() => expect(screen.getByLabelText('The first message')).toBeTruthy());
+    const before = (screen.getByLabelText('The first message') as HTMLTextAreaElement).value;
+    expect(before.length).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByText('Record this'));
+    await waitFor(() => expect(screen.getByText('Contact recorded.')).toBeTruthy());
+
+    // After saving: still there, with the handoff buttons, and no second Ask.
+    expect((screen.getByLabelText('The first message') as HTMLTextAreaElement).value).toBe(before);
+    expect(screen.getByText('I sent this')).toBeTruthy();
+    expect(screen.getByText('Copy, not sent')).toBeTruthy();
+    expect(value.askAssistant).toHaveBeenCalledTimes(1);
+    expect(calls.touch).toHaveLength(1);
+    expect(calls.sent).toEqual([]);
+  });
+
+  it('keeps a reviewed phone number on a contact that already exists', async () => {
+    /*
+     * The capture path files a handle in SQL. A matched contact is recorded
+     * through record_conversation, which has no business editing a phone
+     * number, so the browser keeps it, under the same rule: see
+     * src/lib/handleShape.ts and src/test/pg/handleShape.test.ts.
+     *
+     * The bracketed form is the one that used to be filed two different ways.
+     */
+    const { calls } = harness({
+      reply: answer({
+        proposal: proposal({
+          intent: 'record',
+          leadId: 'l-jamie',
+          person: { ...proposal().person, handle: '(305) 555-0147', channel: 'Text' },
+          facts: [],
+        }),
+      }),
+    });
+    await ask('Spoke to Chef Jamie, her number is (305) 555-0147');
+    await waitFor(() => expect(screen.getByText('Record this')).toBeTruthy());
+
+    fireEvent.click(screen.getByText('Record this'));
+    await waitFor(() => expect(calls.touch).toHaveLength(1));
+
+    const written = calls.updates.filter((entry) => entry.table === 'leads');
+    expect(written).toHaveLength(1);
+    expect(written[0].patch.phone).toBe('(305) 555-0147');
+    expect(written[0].patch.preferred_channel).toBe('Text');
+    // Not shoved into the notes, which is where it went before.
+    expect(written[0].patch.notes).toBeUndefined();
+  });
+
+  it('files a reviewed address as an address, lowercased', async () => {
+    const { calls } = harness({
+      reply: answer({
+        proposal: proposal({
+          intent: 'record',
+          leadId: 'l-jamie',
+          person: { ...proposal().person, handle: 'Chef.Jamie@Example.COM', channel: 'Email' },
+          facts: [],
+        }),
+      }),
+    });
+    await ask('Emailed Chef Jamie at Chef.Jamie@Example.COM');
+    await waitFor(() => expect(screen.getByText('Record this')).toBeTruthy());
+
+    fireEvent.click(screen.getByText('Record this'));
+    await waitFor(() => expect(calls.touch).toHaveLength(1));
+
+    const written = calls.updates.filter((entry) => entry.table === 'leads');
+    expect(written[0].patch.email).toBe('chef.jamie@example.com');
+    expect(written[0].patch.phone).toBeUndefined();
+  });
+
+  it('writes nothing to a contact whose details already match', async () => {
+    // An update that changes no value still moves updated_at, which is the
+    // timestamp Undo compares against to spot somebody else editing a record.
+    const { calls } = harness({
+      reply: answer({
+        proposal: proposal({
+          intent: 'record',
+          leadId: 'l-jamie',
+          person: { ...proposal().person, handle: '', channel: 'Instagram' },
+          facts: [],
+        }),
+      }),
+    });
+    await ask('Spoke to Chef Jamie');
+    await waitFor(() => expect(screen.getByText('Record this')).toBeTruthy());
+
+    fireEvent.click(screen.getByText('Record this'));
+    await waitFor(() => expect(calls.touch).toHaveLength(1));
+
+    // JAMIE already prefers Instagram and has no handle to add.
+    expect(calls.updates.filter((entry) => entry.table === 'leads')).toEqual([]);
+  });
+
   it('keeps an explicitly selected reminder and records one send even after a double press', async () => {
     const { calls } = harness({});
     await ask('Met someone; promised examples.');

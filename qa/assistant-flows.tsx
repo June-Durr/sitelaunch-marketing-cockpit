@@ -89,6 +89,23 @@ function proposal(over: Partial<AssistantProposal>): AssistantProposal {
 const FLOWS: Record<string, AssistantProposal> = {
   new: proposal({}),
   matched: proposal({ intent: 'record', leadId: 'zz-matched' }),
+  /*
+   * The shape the reported bug arrived in.
+   *
+   * A real match often comes back with no place and no next action, and that
+   * used to fall straight through the saved card without offering a message,
+   * so the next thing somebody did was ask a second time for the message they
+   * had already been shown.
+   */
+  thin: proposal({
+    intent: 'record',
+    leadId: 'zz-matched',
+    conversation: {
+      occurredOn: '2026-10-17', place: null, summary: 'Caught up briefly',
+      channel: 'phone', outcome: null, nextAction: null, nextDueDate: null,
+    },
+    facts: [],
+  }),
 };
 
 /* --------------------------------------------------------------- the stub --- */

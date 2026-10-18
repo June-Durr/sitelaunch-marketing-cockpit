@@ -29,6 +29,7 @@ import type { MessageDraft } from '../types/assistant';
 import { buildAssistantContext } from './buildContext';
 import { pickOperation } from './route';
 import { pressToken } from './pressToken';
+import { classifyHandle } from '../lib/handleShape';
 import {
   AssistantContext, type AssistantValue, type Candidate, type ContactEdit,
   type DraftEdit, type RevisionPatch, type SavedRecord, type TouchEdit, type Turn,
@@ -333,25 +334,58 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
     }
   }, [update]);
 
+  /**
+   * Keep the handle somebody reviewed, on a contact that already exists.
+   *
+   * capture_contact does this in SQL for a contact being created. A contact
+   * that is already there is reached through record_conversation, which has no
+   * business editing a phone number, so the browser does it: the person has
+   * just looked at the field and can see what is about to be kept.
+   *
+   * The shape decides which column, through classifyHandle, which is the twin
+   * of the SQL in migration 0022. It used to be two different rules here and
+   * there, so "(305) 555-0188" was a phone number on one path and a line of
+   * notes on the other. src/test/pg/handleShape.test.ts runs both over one
+   * list of inputs so that cannot happen again.
+   *
+   * Nothing is written when nothing differs, because an update that changes no
+   * value still bumps updated_at, and that is the timestamp Undo compares
+   * against to decide whether somebody else has edited a record since.
+   */
   const keepTouchHandle = useCallback(async (leadId: string, handle?: string, channel?: string) => {
     const lead = leads.find((candidate) => candidate.id === leadId);
-    const value = handle?.trim();
-    if (!lead || !value) return null;
-    const patch: { phone?: string; email?: string; preferred_channel?: string; notes?: string } = {};
-    if (/^[+()\d .-]+$/.test(value) && value.replace(/\D/g, '').length >= 7) {
-      if (lead.phone !== value) patch.phone = value;
-    } else if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) {
-      if (lead.email !== value) patch.email = value;
-    } else if (!(lead.notes ?? '').includes(`Contact: ${value}`)) {
-      patch.notes = [lead.notes, `Contact: ${value}`].filter(Boolean).join('\n');
+    if (!lead) return null;
+
+    const patch: {
+      phone?: string; email?: string; preferred_channel?: string; notes?: string;
+    } = {};
+
+    const classified = classifyHandle(handle);
+    if (classified.value !== '') {
+      if (classified.kind === 'phone') {
+        if (lead.phone !== classified.value) patch.phone = classified.value;
+      } else if (classified.kind === 'email') {
+        if (lead.email !== classified.value) patch.email = classified.value;
+      } else if (!(lead.notes ?? '').includes(`Contact: ${classified.value}`)) {
+        // No column fits, so it goes where somebody will read it, once.
+        patch.notes = [lead.notes, `Contact: ${classified.value}`]
+          .filter(Boolean)
+          .join('\n');
+      }
     }
-    if (channel?.trim()) patch.preferred_channel = channel.trim();
-    if (!Object.keys(patch).length) return null;
+
+    const channelValue = channel?.trim();
+    if (channelValue && lead.preferred_channel !== channelValue) {
+      patch.preferred_channel = channelValue;
+    }
+
+    if (Object.keys(patch).length === 0) return null;
     try {
       await update('leads', leadId, patch);
       return null;
     } catch {
-      return 'The conversation saved, but the contact details could not be updated. Check their phone or address before sending.';
+      return 'The conversation saved, but the contact details could not be updated. '
+        + 'Check their phone or address before sending.';
     }
   }, [leads, update]);
 

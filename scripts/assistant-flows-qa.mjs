@@ -32,7 +32,7 @@ const check = (label, ok, detail = '') => {
 
 const browser = await chromium.launch();
 
-for (const flow of ['new', 'matched']) {
+for (const flow of ['new', 'matched', 'thin']) {
   for (const size of SIZES) {
     const label = `${flow} contact, ${size.name}`;
     const context = await browser.newContext({
@@ -72,14 +72,42 @@ for (const flow of ['new', 'matched']) {
 
     const firstBody = await message.inputValue();
     check(
-      `${label}: the message is written and specific`,
-      firstBody.includes('the chamber mixer') && firstBody.includes('examples'),
+      `${label}: the message is written`,
+      flow === 'thin'
+        // Nothing was promised and no place was recorded, so the message is
+        // short and says so through its gaps rather than inventing either.
+        ? firstBody.trim().length > 0
+        : firstBody.includes('the chamber mixer') && firstBody.includes('examples'),
       firstBody.slice(0, 70),
     );
 
-    const dateField = page.locator('input[type="date"]').first();
+    /*
+     * The follow-up field, by its label rather than by position.
+     *
+     * The first date input on these cards is the day the meeting happened, so
+     * taking .first() was checking that the meeting had a date, which it always
+     * does. The label is the only thing that identifies the right field, and it
+     * carries the answer too: suggested, from what you said, or neither.
+     */
+    const dateField = page.getByLabel(/^Next follow-up/);
     const dateValue = await dateField.inputValue();
-    check(`${label}: an initial action date is offered`, dateValue !== '', dateValue);
+    const dateLabel = await dateField.evaluate((node) => node.closest('label')?.innerText ?? '');
+
+    if (flow === 'thin') {
+      // Nothing promised and no day named, so the Cockpit's own rhythm decides
+      // rather than this card dragging a date to today.
+      check(
+        `${label}: no date is invented when nothing is owed`,
+        dateValue === '' && /usual rhythm/.test(dateLabel),
+        `value=${JSON.stringify(dateValue)}`,
+      );
+    } else {
+      check(
+        `${label}: an initial action date is offered, and says where it came from`,
+        dateValue !== '' && /suggested|from what you said/.test(dateLabel),
+        `${dateValue} :: ${dateLabel.split(String.fromCharCode(10))[0]}`,
+      );
+    }
 
     const trackingVisible = await page
       .getByText(/Calendar and tracking: pending your save/)

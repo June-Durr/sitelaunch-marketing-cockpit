@@ -221,9 +221,13 @@ function SavedCard({ turn }: { turn: AssistantTurn }) {
       <ResultLinks saved={{ ...saved, nextDueDate: shownFollowUp }} />
 
       {/*
-        A saved contact is filing until something goes out, so the message comes
-        next, already written. Only for a contact: a recorded touch or a
-        confirmed send has already happened.
+        A saved record is filing until something goes out, so the message comes
+        next, already written.
+
+        Both kinds get it. A new contact always, and a recorded conversation
+        whenever a message was reviewed with it, which is now every time: a
+        matched contact used to fall through here and leave somebody asking a
+        second time for the message they had just been shown.
       */}
       {(saved.kind === 'contact' || (saved.kind === 'touch' && saved.firstMessage)) && saved.leadId ? (
         <FirstContact
