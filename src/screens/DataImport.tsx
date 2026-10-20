@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useData } from '../data/context';
 import { Drawer } from '../components/Drawer';
 import { BackupPanel } from './BackupPanel';
+import { ProfilePanel } from './ProfilePanel';
 import { ProgramPanel } from './ProgramPanel';
 import { IntegrationsPanel } from './IntegrationsPanel';
 import { GoogleSyncPanel } from './GoogleSyncPanel';
@@ -246,8 +247,10 @@ export function DataImport() {
         id="settings"
         title="Program and account settings"
         Icon={SettingsGroupIcon}
-        lede="The handles posts go out under, and the ninety day window every comparison is measured inside."
+        lede="Who your messages come from, the handles posts go out under, and the ninety day window every comparison is measured inside."
       >
+        <ProfilePanel />
+
         <IntegrationCard
           Icon={AccountsIcon}
           title="Accounts"

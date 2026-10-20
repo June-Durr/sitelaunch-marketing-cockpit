@@ -13,7 +13,7 @@
  */
 
 import { describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 
 import { AssistantLauncher, AssistantPanel } from '../assistant/AssistantPanel';
@@ -22,6 +22,7 @@ import type { AssistantAnswer, AssistantProposal } from '../assistant/wire';
 import { FOLLOW_UP_CADENCE_DAYS } from '../config/followUp';
 import { addDays, today } from '../lib/dates';
 import { DataContext, type DataContextValue } from '../data/context';
+import { writeIdentity } from '../data/settings';
 import { EMPTY_DATASET, type CaptureOutcome, type DraftOutcome } from '../data/repository';
 import type { Dataset } from '../types/domain';
 import { makeActivity, makeLead, NO_ASSISTANT } from './fixtures';
@@ -272,6 +273,14 @@ describe('describing somebody you met', () => {
 
     await waitFor(() => expect(screen.getByText('A new contact, from what you told me.')).toBeTruthy());
 
+    // Summarised by default. Eight input boxes used to sit on top of the one
+    // thing somebody came to read.
+    expect(screen.getByText('Eddie Claus')).toBeTruthy();
+    expect(screen.getByText('Invented Tacos')).toBeTruthy();
+    expect(screen.queryByLabelText(/^Name$/)).toBeNull();
+
+    // And a press away when one of them is wrong.
+    fireEvent.click(screen.getByText('Edit details'));
     expect((screen.getByLabelText(/^Name$/) as HTMLInputElement).value).toBe('Eddie Claus');
     expect((screen.getByLabelText('Business') as HTMLInputElement).value).toBe('Invented Tacos');
     expect((screen.getByLabelText('Met on') as HTMLInputElement).value).toBe('2026-10-12');
@@ -415,8 +424,9 @@ describe('describing somebody you met', () => {
   it('takes the edit over the suggestion', async () => {
     const { calls } = harness({});
     await ask('Met somebody at the mixer');
-    await waitFor(() => expect(screen.getByLabelText(/^Name$/)).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('Edit details')).toBeTruthy());
 
+    fireEvent.click(screen.getByText('Edit details'));
     fireEvent.change(screen.getByLabelText(/^Name$/), { target: { value: 'Eddie Clausen' } });
     fireEvent.click(screen.getByText('Save this contact'));
 
@@ -466,8 +476,9 @@ describe('describing somebody you met', () => {
   it('says the meeting was not recorded when the day was not known', async () => {
     harness({});
     await ask('Met Eddie at some point');
-    await waitFor(() => expect(screen.getByLabelText('Met on')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('Edit details')).toBeTruthy());
 
+    fireEvent.click(screen.getByText('Edit details'));
     fireEvent.change(screen.getByLabelText('Met on'), { target: { value: '' } });
     fireEvent.click(screen.getByText('Save this contact'));
 
@@ -559,7 +570,11 @@ describe('recording a contact that already happened', () => {
     await ask('I spoke to Chef Jamie recently');
     await waitFor(() => expect(screen.getByText('Record this')).toBeTruthy());
     expect((screen.getByText('Record this') as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.getByText(/A contact with no day is not a record of anything/)).toBeTruthy();
+
+    // Said on the card, so nobody has to open anything to find out why the
+    // button will not work.
+    expect(screen.getByText(/A day and a line about what happened are needed/)).toBeTruthy();
+    expect(screen.getAllByText(/Needed before this can be recorded/).length).toBeGreaterThan(0);
   });
 
   it('says it cannot record against nobody', async () => {
@@ -747,7 +762,16 @@ describe('what happens the moment a contact is saved', () => {
       expect(screen.getByText('A first message, ready to look over.')).toBeTruthy());
     const message = (screen.getByLabelText('The first message') as HTMLTextAreaElement).value;
 
-    expect(message).toContain('Hi Eddie');
+    /*
+     * Composed from the saved record, not from the proposal.
+     *
+     * Once a contact exists, the record is what is true about them, and this
+     * harness returns a fixed saved contact whatever the input, so the two
+     * names differ here where in the app they are the same row. The greeting
+     * following the record is the property worth having: it is what lets a
+     * profile completed after saving sign the message.
+     */
+    expect(message).toContain('Hi ZZ');
     expect(message).toContain('the chamber mixer');
     expect(message).toContain('send examples');
     // And nothing invented.
@@ -756,30 +780,66 @@ describe('what happens the moment a contact is saved', () => {
     expect(message.toLowerCase()).not.toContain('attached');
   });
 
-  it('asks who you are rather than inventing an introduction', async () => {
+  it('asks who you are with one link, not a form in the message card', async () => {
     harness({});
     await saveThenLook();
-    await waitFor(() => expect(screen.getByLabelText('Your name')).toBeTruthy());
-    expect(screen.getByText(/how you introduce yourself/)).toBeTruthy();
+
+    await waitFor(() =>
+      expect(screen.getByRole('link', { name: 'Complete your profile' })).toBeTruthy());
+    // The settings form that used to sit in the middle of the message is gone.
+    expect(screen.queryByLabelText('Your name')).toBeNull();
+    expect(screen.queryByLabelText('Your business')).toBeNull();
+    expect(screen.getByText(/Nothing typed here is lost/)).toBeTruthy();
+
     const message = (screen.getByLabelText('The first message') as HTMLTextAreaElement).value;
     expect(message).not.toContain('Your Name');
+    expect(message).not.toContain('[');
   });
 
-  it('uses the introduction once it is given', async () => {
+  it('points the link at the settings panel that holds the one identity store', async () => {
     harness({});
     await saveThenLook();
-    await waitFor(() => expect(screen.getByLabelText('Your name')).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByRole('link', { name: 'Complete your profile' })).toBeTruthy());
+    const link = screen.getByRole('link', { name: 'Complete your profile' }) as HTMLAnchorElement;
+    expect(link.getAttribute('href')).toBe('/data#settings');
+  });
 
-    fireEvent.change(screen.getByLabelText('Your name'), { target: { value: 'Invented Sender' } });
-    fireEvent.change(screen.getByLabelText('Your business'), {
-      target: { value: 'Invented Studios' },
+  it('picks up an identity saved somewhere else while the card is open', async () => {
+    // The profile is completed on another screen, in the one store there is.
+    // The panel lives in the shell, so it is still here on the way back, and it
+    // has to notice.
+    harness({});
+    await saveThenLook();
+    await waitFor(() => expect(screen.getByLabelText('The first message')).toBeTruthy());
+
+    act(() => {
+      writeIdentity({ name: 'Invented Sender', business: 'Invented Studios' });
     });
-    fireEvent.click(screen.getByText('Use this in my messages'));
 
     await waitFor(() => {
       const message = (screen.getByLabelText('The first message') as HTMLTextAreaElement).value;
       expect(message).toContain('Invented Sender from Invented Studios');
     });
+    expect(screen.queryByRole('link', { name: 'Complete your profile' })).toBeNull();
+  });
+
+  it('never overwrites wording somebody has typed with the new identity', async () => {
+    harness({});
+    await saveThenLook();
+    await waitFor(() => expect(screen.getByLabelText('The first message')).toBeTruthy());
+
+    const mine = 'My own wording, which I want kept.';
+    fireEvent.change(screen.getByLabelText('The first message'), { target: { value: mine } });
+
+    act(() => {
+      writeIdentity({ name: 'Invented Sender', business: 'Invented Studios' });
+    });
+
+    // An edit is the person's wording. Completing a profile does not get to
+    // recompose over the top of it.
+    await waitFor(() =>
+      expect((screen.getByLabelText('The first message') as HTMLTextAreaElement).value).toBe(mine));
   });
 
   it('records a copy as a copy, and records no send', async () => {

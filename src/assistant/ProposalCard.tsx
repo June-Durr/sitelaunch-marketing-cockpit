@@ -22,6 +22,7 @@ import { useData } from '../data/context';
 import { leadLabel } from '../lib/leadLabel';
 import { FirstContact } from './FirstContact';
 import { ContactPlan } from './ContactPlan';
+import { DetailDisclosure } from './DetailDisclosure';
 import { useContactPlan } from './useContactPlan';
 import { formatDay, today } from '../lib/dates';
 import {
@@ -236,6 +237,7 @@ function SavedCard({ turn }: { turn: AssistantTurn }) {
           metOn={saved.occurredOn}
           promise={saved.promise}
           initialMessage={saved.firstMessage}
+          initialMessageEdited={saved.firstMessageEdited}
           initialDraftId={saved.draftId}
           onReminderSaved={(date) => { setConfirmedFollowUp({ date }); setNextDueDate(date ?? ''); }}
           noteOptions={(turn.proposal?.facts ?? []).map((fact) => fact.value)}
@@ -338,52 +340,35 @@ function CaptureCard({ turn }: { turn: AssistantTurn }) {
   const [keep, setKeep] = useState<boolean[]>(proposal.facts.map(() => true));
 
 
+  /*
+   * What the card says before anybody opens anything.
+   *
+   * Every field, with an absence spelled out rather than left blank: the thing
+   * worth noticing is the gap, not the six values that are right.
+   */
+  const detailRows = [
+    { label: 'Name', value: name.trim() || null, absent: 'Not caught' },
+    { label: 'Business', value: organization.trim() || null },
+    { label: 'Reach them', value: channel.trim() || null, absent: 'Not recorded' },
+    { label: 'Handle', value: handle.trim() || null },
+    { label: 'Met on', value: metOn || null, absent: 'Day not known' },
+    { label: 'They want', value: interest.trim() || null },
+    { label: 'Next step', value: nextAction.trim() || null, absent: 'Nothing promised' },
+  ];
+
+  const nameless = name.trim() === '' && organization.trim() === '';
+
   return (
     <div className="asst-card">
       <p className="asst-card-head">A new contact, from what you told me.</p>
-      <div className="asst-fields">
-        <Field label="Name" hint={name === '' ? 'Leave it blank if you did not catch it.' : undefined}>
-          <input value={name} onChange={(event) => setName(event.target.value)} />
-        </Field>
-        <Field label="Business">
-          <input
-            value={organization}
-            onChange={(event) => setOrganization(event.target.value)}
-          />
-        </Field>
-        <Field label="How to reach them">
-          <input value={channel} onChange={(event) => setChannel(event.target.value)} />
-        </Field>
-        <Field label="Their handle or address">
-          <input value={handle} onChange={(event) => setHandle(event.target.value)} />
-        </Field>
-        <Field
-          label="Met on"
-          hint={metOn === '' ? 'Blank is fine. Nothing gets recorded as happening on a day nobody knows.' : undefined}
-        >
-          <input type="date" value={metOn} onChange={(event) => setMetOn(event.target.value)} />
-        </Field>
-        <Field label="What they want">
-          <input value={interest} onChange={(event) => setInterest(event.target.value)} />
-        </Field>
-        <Field label="Next step">
-          <input
-            value={nextAction}
-            onChange={(event) => setNextAction(event.target.value)}
-          />
-        </Field>
-        <Field label={plan.dateLabel} hint={plan.dateHint}>
-          <input
-            type="date"
-            className={plan.suggested ? 'asst-suggested' : undefined}
-            value={plan.date}
-            onChange={(event) => {
-              plan.setDate(event.target.value);
-            }}
-          />
-        </Field>
-      </div>
 
+      {/*
+        The message first.
+
+        It is the thing somebody came for, and it used to be underneath eight
+        input boxes. Everything below it is review: what was extracted, what is
+        uncertain, and when to follow up.
+      */}
       <ContactPlan plan={plan} />
 
       <FactList
@@ -394,10 +379,57 @@ function CaptureCard({ turn }: { turn: AssistantTurn }) {
         }
       />
 
+      {/* Outside the disclosure on purpose: a date is a claim, not a detail. */}
+      <div className="asst-fields asst-date-row">
+        <Field label={plan.dateLabel} hint={plan.dateHint}>
+          <input
+            type="date"
+            className={plan.suggested ? 'asst-suggested' : undefined}
+            value={plan.date}
+            onChange={(event) => plan.setDate(event.target.value)}
+          />
+        </Field>
+      </div>
+
+      <DetailDisclosure rows={detailRows}>
+        <div className="asst-fields">
+          <Field label="Name" hint={name === '' ? 'Leave it blank if you did not catch it.' : undefined}>
+            <input value={name} onChange={(event) => setName(event.target.value)} />
+          </Field>
+          <Field label="Business">
+            <input
+              value={organization}
+              onChange={(event) => setOrganization(event.target.value)}
+            />
+          </Field>
+          <Field label="How to reach them">
+            <input value={channel} onChange={(event) => setChannel(event.target.value)} />
+          </Field>
+          <Field label="Their handle or address">
+            <input value={handle} onChange={(event) => setHandle(event.target.value)} />
+          </Field>
+          <Field
+            label="Met on"
+            hint={metOn === '' ? 'Blank is fine. Nothing gets recorded as happening on a day nobody knows.' : undefined}
+          >
+            <input type="date" value={metOn} onChange={(event) => setMetOn(event.target.value)} />
+          </Field>
+          <Field label="What they want">
+            <input value={interest} onChange={(event) => setInterest(event.target.value)} />
+          </Field>
+          <Field label="Next step">
+            <input
+              value={nextAction}
+              onChange={(event) => setNextAction(event.target.value)}
+            />
+          </Field>
+        </div>
+      </DetailDisclosure>
+
       <div className="asst-actions">
         <button
           className="btn"
-          disabled={busy || (name.trim() === '' && organization.trim() === '')}
+          disabled={busy || nameless}
           onClick={() =>
             void saveContact(turn.id, {
               name, organization, channel, handle, metOn, interest,
@@ -407,6 +439,7 @@ function CaptureCard({ turn }: { turn: AssistantTurn }) {
               // somebody having cleared it on purpose.
               clearedSuggestion: plan.date === '',
               firstMessage: plan.body,
+              firstMessageEdited: plan.edited,
               keepFacts: keep,
             })
           }
@@ -414,9 +447,13 @@ function CaptureCard({ turn }: { turn: AssistantTurn }) {
           Save this contact
         </button>
       </div>
-      {name.trim() === '' && organization.trim() === '' ? (
-        <p className="asst-hint">A name or a business is enough to save them. I need one of the two.</p>
-      ) : null}
+
+      {/* One next action, said once, at whichever stage this card is in. */}
+      <p className="asst-hint asst-next-action">
+        {nameless
+          ? 'A name or a business is enough to save them. I need one of the two.'
+          : 'Next: save them. Copying and sending come after that, with the message above.'}
+      </p>
     </div>
   );
 }
@@ -474,45 +511,26 @@ function TouchCard({ turn }: { turn: AssistantTurn }) {
     );
   }
 
+  const detailRows = [
+    { label: 'Happened on', value: occurredOn || null, absent: 'Needed before this can be recorded' },
+    { label: 'How', value: channel.trim() || null },
+    { label: 'What happened', value: summary.trim() || null, absent: 'Needed before this can be recorded' },
+    { label: 'Came of it', value: outcome.trim() || null },
+    { label: 'Next step', value: nextAction.trim() || null, absent: 'Nothing promised' },
+    { label: 'Handle', value: handle.trim() || null },
+    { label: 'Reach them', value: contactChannel.trim() || null },
+  ];
+
+  const ready = occurredOn !== '' && summary.trim() !== '';
+
   return (
     <div className="asst-card">
       <p className="asst-card-head">Something that already happened.</p>
-      <div className="asst-fields">
-        <Field label="Their handle or address" hint="Review this contact detail before recording. It will be kept on their existing contact.">
-          <input value={handle} onChange={(event) => setHandle(event.target.value)} />
-        </Field>
-        <Field label="How to reach them">
-          <input value={contactChannel} onChange={(event) => setContactChannel(event.target.value)} />
-        </Field>
-        <Field
-          label="The day it happened"
-          hint={occurredOn === '' ? 'Needed. A contact with no day is not a record of anything.' : undefined}
-        >
-          <input
-            type="date"
-            value={occurredOn}
-            onChange={(event) => setOccurredOn(event.target.value)}
-          />
-        </Field>
-        <Field label="How">
-          <input value={channel} onChange={(event) => setChannel(event.target.value)} />
-        </Field>
-        <Field label="What happened" span>
-          <textarea
-            rows={2}
-            value={summary}
-            onChange={(event) => setSummary(event.target.value)}
-          />
-        </Field>
-        <Field label="What came of it">
-          <input value={outcome} onChange={(event) => setOutcome(event.target.value)} />
-        </Field>
-        <Field label="Next step">
-          <input
-            value={nextAction}
-            onChange={(event) => setNextAction(event.target.value)}
-          />
-        </Field>
+
+      {/* The message first, for the same reason as a new contact. */}
+      <ContactPlan plan={plan} />
+
+      <div className="asst-fields asst-date-row">
         <Field
           label={suggestsDate ? plan.dateLabel : 'Next follow-up'}
           hint={suggestsDate
@@ -528,10 +546,53 @@ function TouchCard({ turn }: { turn: AssistantTurn }) {
         </Field>
       </div>
 
+      <DetailDisclosure rows={detailRows}>
+        <div className="asst-fields">
+          <Field
+            label="The day it happened"
+            hint={occurredOn === '' ? 'Needed. A contact with no day is not a record of anything.' : undefined}
+          >
+            <input
+              type="date"
+              value={occurredOn}
+              onChange={(event) => setOccurredOn(event.target.value)}
+            />
+          </Field>
+          <Field label="How">
+            <input value={channel} onChange={(event) => setChannel(event.target.value)} />
+          </Field>
+          <Field label="What happened" span>
+            <textarea
+              rows={2}
+              value={summary}
+              onChange={(event) => setSummary(event.target.value)}
+            />
+          </Field>
+          <Field label="What came of it">
+            <input value={outcome} onChange={(event) => setOutcome(event.target.value)} />
+          </Field>
+          <Field label="Next step">
+            <input
+              value={nextAction}
+              onChange={(event) => setNextAction(event.target.value)}
+            />
+          </Field>
+          <Field label="Their handle or address" hint="Kept on their existing contact.">
+            <input value={handle} onChange={(event) => setHandle(event.target.value)} />
+          </Field>
+          <Field label="How to reach them">
+            <input
+              value={contactChannel}
+              onChange={(event) => setContactChannel(event.target.value)}
+            />
+          </Field>
+        </div>
+      </DetailDisclosure>
+
       <div className="asst-actions">
         <button
           className="btn"
-          disabled={busy || occurredOn === '' || summary.trim() === ''}
+          disabled={busy || !ready}
           onClick={() =>
             void saveTouch(turn.id, {
               leadId, occurredOn, summary, channel, outcome, nextAction,
@@ -540,6 +601,7 @@ function TouchCard({ turn }: { turn: AssistantTurn }) {
               // cleared. A field that was never filled means "use the rhythm".
               clearedSuggestion: suggestsDate && plan.date === '',
               firstMessage: plan.body,
+              firstMessageEdited: plan.edited,
               handle, contactChannel,
             })
           }
@@ -547,7 +609,12 @@ function TouchCard({ turn }: { turn: AssistantTurn }) {
           Record this
         </button>
       </div>
-      <ContactPlan plan={plan} />
+
+      <p className="asst-hint asst-next-action">
+        {ready
+          ? 'Next: record it. Copying and sending come after that, with the message above.'
+          : 'A day and a line about what happened are needed. Open Edit details to add them.'}
+      </p>
     </div>
   );
 }

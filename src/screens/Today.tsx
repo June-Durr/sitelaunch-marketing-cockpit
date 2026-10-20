@@ -23,6 +23,7 @@ import {
 } from '../config/followUp';
 import { FollowUpIcon } from '../components/icons';
 import { FollowUpQueue } from '../components/FollowUpQueue';
+import { ProfilePrompt } from '../components/ProfilePrompt';
 import { readSettings } from '../data/settings';
 import { formatCurrency } from '../lib/format';
 import { aggregate } from '../lib/metrics';
@@ -119,6 +120,8 @@ export function Today() {
 
   return (
     <>
+      <ProfilePrompt />
+
       <PageHead
         kicker={formatDay(now)}
         title="Today"

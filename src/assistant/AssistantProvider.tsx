@@ -437,6 +437,7 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
           // actually saved.
           promise: edited.nextAction.trim() === '' ? null : edited.nextAction.trim(),
           firstMessage: edited.firstMessage,
+          firstMessageEdited: edited.firstMessageEdited === true,
           place: turn.proposal.conversation.place,
           // Null only when the clear actually landed. A failed clear means the
           // date may still stand, and the screen must not say otherwise.
@@ -499,6 +500,7 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
             promise: edited.nextAction.trim() === '' ? null : edited.nextAction.trim(),
             place: proposal?.conversation.place ?? null,
             firstMessage: edited.firstMessage,
+            firstMessageEdited: edited.firstMessageEdited === true,
             nextDueDate: edited.clearedSuggestion === true && clearError === null
               ? null
               : outcome.nextDueDate,

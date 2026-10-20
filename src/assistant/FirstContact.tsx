@@ -20,10 +20,11 @@
  */
 
 import { useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 
 import { Field } from '../components/primitives';
 import { useData } from '../data/context';
-import { readSettings, writeSettings, type Introduction } from '../data/settings';
+import { useIdentity } from '../data/useIdentity';
 import { formatDay, today } from '../lib/dates';
 import {
   buildVCard, cardFileName, cardPreview, contactSupport,
@@ -34,6 +35,8 @@ import { pressToken } from './pressToken';
 
 export interface FirstContactProps {
   initialMessage?: string;
+  /** True when initialMessage was typed by a person, not composed for them. */
+  initialMessageEdited?: boolean;
   initialDraftId?: string | null;
   onReminderSaved?: (date: string | null) => void;
   leadId: string;
@@ -70,9 +73,13 @@ export function FirstContact(props: FirstContactProps) {
   const repliesRecorded = ctx.data.activityEvents.filter(
     (event) => event.lead_id === props.leadId && event.activity_type === 'reply_received',
   ).length;
-  const [settings, setSettings] = useState(() => readSettings());
-  const [introducing, setIntroducing] = useState(false);
-  const [intro, setIntro] = useState<Introduction>(settings.introduction);
+  /*
+   * Live, not read once.
+   *
+   * Somebody who completes their profile while this card is open sees the
+   * message pick the line up, as long as they have not typed their own wording.
+   */
+  const identity = useIdentity();
 
   /*
    * Composed every render, deliberately.
@@ -84,7 +91,7 @@ export function FirstContact(props: FirstContactProps) {
    */
   const composed = composeFirstMessage({
     contactName: name,
-    introduction: settings.introduction,
+    introduction: identity,
     metWhere: props.metWhere,
     metOn: props.metOn,
     today: today(),
@@ -92,7 +99,15 @@ export function FirstContact(props: FirstContactProps) {
   });
 
   const [body, setBody] = useState(props.initialMessage ?? composed.body);
-  const [edited, setEdited] = useState(props.initialMessage !== undefined);
+  /*
+   * Whether this wording is somebody's own.
+   *
+   * Arriving with a message is not the same as arriving with an edit. The
+   * review card composes one and hands it over, and if that counted as an edit
+   * then completing a profile afterwards would leave the message unsigned for
+   * good, because nothing would recompose what looked like typed words.
+   */
+  const [edited, setEdited] = useState(props.initialMessageEdited === true);
   // The composed text follows the introduction until somebody types their own.
   const message = edited ? body : composed.body;
 
@@ -282,21 +297,6 @@ export function FirstContact(props: FirstContactProps) {
     }
   };
 
-  const saveIntro = () => {
-    const next = { ...settings, introduction: intro };
-    writeSettings(next);
-    setSettings(next);
-    setIntroducing(false);
-    // The composed message picks the new introduction up, unless it has been
-    // edited by hand, in which case the person's wording wins.
-    if (edited && intro.name?.trim() && !settings.introduction.name) {
-      const identity = `it's ${intro.name.trim()}${intro.business?.trim() ? ` from ${intro.business.trim()}` : ''}.`;
-      setBody(/^Hi(?: [^,.]+)?,\s*/.test(message)
-        ? message.replace(/^(Hi(?: [^,.]+)?),\s*/, `$1, ${identity} `)
-        : `${identity.charAt(0).toUpperCase()}${identity.slice(1)} ${message}`);
-    }
-  };
-
   return (
     <div className="asst-first">
       <p className="asst-first-head">
@@ -347,26 +347,15 @@ export function FirstContact(props: FirstContactProps) {
             </p>
           ))}
 
-          {introducing || settings.introduction.name === null ? (
-            <div className="asst-fields asst-intro">
-              <Field label="Your name">
-                <input
-                  value={intro.name ?? ''}
-                  onChange={(event) => setIntro({ ...intro, name: event.target.value })}
-                />
-              </Field>
-              <Field label="Your business">
-                <input
-                  value={intro.business ?? ''}
-                  onChange={(event) => setIntro({ ...intro, business: event.target.value })}
-                />
-              </Field>
-              <div className="asst-actions">
-                <button className="btn btn-quiet" onClick={saveIntro}>
-                  Use this in my messages
-                </button>
-              </div>
-            </div>
+          {/* One line, not a form. See the same decision in ContactPlan.tsx. */}
+          {identity.name === null ? (
+            <p className="asst-hint asst-profile-gap">
+              This will not say who it is from.{' '}
+              <Link className="asst-link" to="/data#settings">
+                Complete your profile
+              </Link>{' '}
+              and it writes that line itself. Nothing typed here is lost.
+            </p>
           ) : null}
 
           <div className="asst-actions">

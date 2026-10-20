@@ -33,8 +33,9 @@ const check = (label, ok, detail = '') => {
 const browser = await chromium.launch();
 
 for (const flow of ['new', 'matched', 'thin']) {
+  for (const profile of ['missing', 'saved']) {
   for (const size of SIZES) {
-    const label = `${flow} contact, ${size.name}`;
+    const label = `${flow} contact, ${profile} profile, ${size.name}`;
     const context = await browser.newContext({
       viewport: { width: size.width, height: size.height },
       // A touch device for the phone run, so anything that reads the user agent
@@ -52,7 +53,7 @@ for (const flow of ['new', 'matched', 'thin']) {
       if (message.type() === 'error') errors.push(message.text());
     });
 
-    await page.goto(`${BASE}/qa/assistant-flows.html?flow=${flow}`, {
+    await page.goto(`${BASE}/qa/assistant-flows.html?flow=${flow}&profile=${profile}`, {
       waitUntil: 'networkidle',
     });
 
@@ -114,6 +115,56 @@ for (const flow of ['new', 'matched', 'thin']) {
       .isVisible();
     check(`${label}: tracking state is shown before saving`, trackingVisible);
 
+    /*
+     * The profile, and the one thing that must be true either way: no
+     * placeholder in a message somebody can copy.
+     */
+    const profileLink = page.getByRole('link', { name: 'Complete your profile' });
+    const nameBoxes = await page.getByLabel(/^Your name/).count();
+    if (profile === 'missing') {
+      check(
+        `${label}: one link asks for the profile, and no form does`,
+        await profileLink.count() === 1 && nameBoxes === 0,
+        `links=${await profileLink.count()} boxes=${nameBoxes}`,
+      );
+      check(
+        `${label}: the unsigned message carries no placeholder`,
+        !/\[|Your Name|your name here/i.test(firstBody),
+        firstBody.slice(0, 60),
+      );
+    } else {
+      check(
+        `${label}: the message signs itself and nothing asks again`,
+        firstBody.includes('Invented Sender from Invented Studios')
+        && await profileLink.count() === 0,
+        firstBody.slice(0, 70),
+      );
+    }
+
+    /* The details are summarised, with the inputs a press away. */
+    const toggle = page.getByRole('button', { name: 'Edit details' });
+    // Next step, because it is a field both cards have: a new contact has no
+    // "what happened" and a recorded conversation has no business name.
+    const inputsBefore = await page.getByLabel(/^Next step/).count();
+    await toggle.click();
+    const inputsAfter = await page.getByLabel(/^Next step/).count();
+    await page.getByRole('button', { name: 'Done editing' }).click();
+    check(
+      `${label}: details are summarised until asked for`,
+      inputsBefore === 0 && inputsAfter === 1,
+      `before=${inputsBefore} after=${inputsAfter}`,
+    );
+
+    /* The message leads: it comes before the details control in the document. */
+    const messageFirst = await page.evaluate(() => {
+      const box = document.querySelector('textarea[aria-label="The first message"]');
+      const details = [...document.querySelectorAll('button')]
+        .find((node) => node.textContent?.trim().startsWith('Edit details'));
+      if (!box || !details) return false;
+      return (box.compareDocumentPosition(details) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+    });
+    check(`${label}: the message comes before the details control`, messageFirst);
+
     const writesBeforeSaving = await page.evaluate(
       () => window.__qa.capture.length + window.__qa.touch.length
         + window.__qa.draft.length + window.__qa.sent.length,
@@ -133,7 +184,7 @@ for (const flow of ['new', 'matched', 'thin']) {
       box ? `x=${Math.round(box.x)} w=${Math.round(box.width)}` : 'no box',
     );
 
-    await page.screenshot({ path: `${OUT}/${flow}-${size.name}-review.png`, fullPage: true });
+    await page.screenshot({ path: `${OUT}/${flow}-${profile}-${size.name}-review.png`, fullPage: true });
 
     /* ------------------------------------- edits survive, and then one save --- */
 
@@ -199,7 +250,7 @@ for (const flow of ['new', 'matched', 'thin']) {
     check(`${label}: the contact card refuses to claim deduplication`, await dedupeNote.isVisible());
     await page.getByRole('button', { name: 'Hide the contact card' }).click();
 
-    await page.screenshot({ path: `${OUT}/${flow}-${size.name}-saved.png`, fullPage: true });
+    await page.screenshot({ path: `${OUT}/${flow}-${profile}-${size.name}-saved.png`, fullPage: true });
 
     const confirm = page.getByRole('button', { name: 'I sent this' });
     await confirm.scrollIntoViewIfNeeded();
@@ -218,11 +269,12 @@ for (const flow of ['new', 'matched', 'thin']) {
     const silence = await page.getByText(/not the same as them not replying/).count();
     check(`${label}: it never claims they did not reply`, silence > 0);
 
-    await page.screenshot({ path: `${OUT}/${flow}-${size.name}-sent.png`, fullPage: true });
+    await page.screenshot({ path: `${OUT}/${flow}-${profile}-${size.name}-sent.png`, fullPage: true });
 
     check(`${label}: no console or page errors`, errors.length === 0, errors.slice(0, 2).join(' | '));
 
     await context.close();
+  }
   }
 }
 

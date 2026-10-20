@@ -1,4 +1,6 @@
 import { useState } from 'react';
+import { Link } from 'react-router-dom';
+
 import { Field } from '../components/primitives';
 import { today, formatDay } from '../lib/dates';
 import { suggestAfterSend } from './followUpSuggestion';
@@ -13,8 +15,6 @@ import type { useContactPlan } from './useContactPlan';
  */
 export function ContactPlan({ plan }: { plan: ReturnType<typeof useContactPlan> }) {
   const [copyState, setCopyState] = useState<string | null>(null);
-  const [introName, setIntroName] = useState(plan.introduction.name ?? '');
-  const [introBusiness, setIntroBusiness] = useState(plan.introduction.business ?? '');
 
   /*
    * The check-in is counted from the day this would be sent, which is today.
@@ -35,12 +35,22 @@ export function ContactPlan({ plan }: { plan: ReturnType<typeof useContactPlan> 
       <Field label="The first message" span>
         <textarea className="asst-body" rows={5} aria-label="The first message" value={plan.body} onChange={(event) => plan.setBody(event.target.value)} />
       </Field>
+      {/*
+        One line, not a form.
+
+        A settings form in the middle of the message was the main thing in the
+        way of reading it. The link goes to the profile panel, and the panel
+        lives in the shell rather than in a route, so the review and anything
+        typed into the message are still here on the way back.
+      */}
       {!plan.introduction.name ? (
-        <div className="asst-fields">
-          <Field label="Your name"><input value={introName} onChange={(event) => setIntroName(event.target.value)} /></Field>
-          <Field label="Your business"><input value={introBusiness} onChange={(event) => setIntroBusiness(event.target.value)} /></Field>
-          <button className="btn btn-quiet" onClick={() => plan.setIntroduction(introName, introBusiness)}>Use this in my messages</button>
-        </div>
+        <p className="asst-hint asst-profile-gap">
+          This will not say who it is from.{' '}
+          <Link className="asst-link" to="/data#settings">
+            Complete your profile
+          </Link>{' '}
+          and it writes that line itself. Nothing here is lost while you do.
+        </p>
       ) : null}
       {plan.gaps.map((gap) => <p className="asst-hint" key={gap}>{gap}</p>)}
       <button className="btn btn-quiet" disabled={!plan.body.trim()} onClick={() => {

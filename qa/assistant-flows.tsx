@@ -25,6 +25,7 @@ import { AssistantLauncher, AssistantPanel } from '../src/assistant/AssistantPan
 import { AssistantProvider } from '../src/assistant/AssistantProvider';
 import type { AssistantAnswer, AssistantProposal } from '../src/assistant/wire';
 import { DataContext, type DataContextValue } from '../src/data/context';
+import { writeIdentity } from '../src/data/settings';
 import { EMPTY_DATASET } from '../src/data/repository';
 import type { Dataset, Lead } from '../src/types/domain';
 import '../src/styles/app.css';
@@ -125,7 +126,22 @@ const recorded: Recorded = {
 };
 (window as unknown as { __qa: Recorded }).__qa = recorded;
 
-const flow = new URLSearchParams(window.location.search).get('flow') ?? 'new';
+const query = new URLSearchParams(window.location.search);
+const flow = query.get('flow') ?? 'new';
+
+/*
+ * The profile, set before anything mounts.
+ *
+ * ?profile=saved writes an identity first, so a run can see both the message
+ * that signs itself and the one that says it cannot and offers a link. Written
+ * through the ordinary settings path, because that is the only identity store
+ * there is.
+ */
+if (query.get('profile') === 'saved') {
+  writeIdentity({ name: 'Invented Sender', business: 'Invented Studios' });
+} else {
+  localStorage.removeItem('slmc.settings.v1');
+}
 
 const answer: AssistantAnswer = {
   status: 'ok',

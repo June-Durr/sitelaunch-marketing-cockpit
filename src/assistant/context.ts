@@ -52,8 +52,18 @@ export interface SavedRecord {
    * until the worker says so.
    */
   sync: 'none' | 'queued' | 'synced' | 'partial';
-  /** Wording edited in the initial review; never requires a second Ask. */
+  /** Wording from the initial review; never requires a second Ask. */
   firstMessage?: string;
+  /**
+   * True when a person typed that wording rather than being shown it.
+   *
+   * A seeded message and an edited one are not the same thing, and treating
+   * them alike meant completing a profile after saving left the message
+   * unsigned forever: it looked like somebody's own words, so nothing would
+   * recompose it. Composed wording follows the identity; typed wording never
+   * gets overwritten.
+   */
+  firstMessageEdited?: boolean;
 }
 
 export type Turn =
@@ -119,6 +129,8 @@ export interface AssistantValue {
 /** The capture card's fields, as the person left them. */
 export interface ContactEdit {
   firstMessage?: string;
+  /** True when the wording above was typed rather than composed. */
+  firstMessageEdited?: boolean;
   /**
    * True when a date was offered and the person emptied it.
    *
@@ -142,6 +154,8 @@ export interface ContactEdit {
 
 export interface TouchEdit {
   firstMessage?: string;
+  /** True when the wording above was typed rather than composed. */
+  firstMessageEdited?: boolean;
   /** See ContactEdit. Blank and cleared are not the same instruction. */
   clearedSuggestion?: boolean;
   handle?: string;

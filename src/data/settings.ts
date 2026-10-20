@@ -54,12 +54,55 @@ export function readSettings(): AppSettings {
   }
 }
 
+/**
+ * Everything waiting to hear that settings changed.
+ *
+ * localStorage fires its storage event in other tabs and never in the one that
+ * did the writing, so a panel sitting open while somebody edits their profile
+ * on another screen would keep composing messages from the old identity. This
+ * is that missing notification, and nothing more: no state, no context, one set
+ * of callbacks.
+ */
+const listeners = new Set<(settings: AppSettings) => void>();
+
+/** Hear about every write. Returns the function that stops listening. */
+export function subscribeToSettings(listener: (settings: AppSettings) => void): () => void {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}
+
 export function writeSettings(settings: AppSettings): void {
   try {
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
   } catch {
     // Storage blocked or full. Preferences are not worth failing a session over.
   }
+  // After the write, so a listener that re-reads gets what was just stored.
+  for (const listener of listeners) listener(settings);
+}
+
+/**
+ * How the person using the Cockpit introduces themselves.
+ *
+ * One store, and this is it. There is no second place a sender name lives: the
+ * accounts table holds the handles posts go out under, which is a different
+ * thing, and the program's name is the name of a ninety day run. Anything that
+ * needs to know who is writing a message reads this.
+ */
+export function readIdentity(): Introduction {
+  return readSettings().introduction;
+}
+
+/** True when there is enough to say who a message is from. */
+export function hasIdentity(identity: Introduction): boolean {
+  return (identity.name ?? '').trim() !== '';
+}
+
+/** Save the identity without disturbing any other setting. */
+export function writeIdentity(identity: Introduction): void {
+  writeSettings({ ...readSettings(), introduction: coerceIntroduction(identity) });
 }
 
 /** Accepts anything and returns a settings object, discarding unknown keys. */
