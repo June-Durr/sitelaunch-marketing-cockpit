@@ -5,14 +5,21 @@ export default defineConfig({
   plugins: [react()],
   test: {
     /*
-     * Fifteen migrations, applied to a real Postgres in WebAssembly, in seven
-     * separate database test files that run alongside the jsdom ones. The
-     * default five seconds was fine when there were eleven; under the
-     * contention that now exists a passing test can take longer than that and
-     * fail for no reason anybody can act on. Raised rather than papered over
-     * with retries, which would hide a genuine hang.
+     * Twenty two migrations, applied to a real Postgres in WebAssembly, in
+     * eight separate database test files that run alongside the jsdom ones.
+     *
+     * The default five seconds was fine when there were eleven migrations and
+     * fewer files. Raised to thirty when there were fifteen, and raised again
+     * here: src/test/screens.test.tsx runs in under four seconds on its own and
+     * was timing out at thirty three inside the full suite, which is starvation
+     * rather than a hang. Raised rather than papered over with retries, which
+     * would hide a real one.
+     *
+     * The real fix is to stop eight WebAssembly databases competing with the
+     * browser tests for the same workers, which is a change to how the suite is
+     * partitioned and not something to do in the middle of a feature.
      */
-    testTimeout: 30_000,
+    testTimeout: 60_000,
     hookTimeout: 180_000,
     environment: 'jsdom',
     globals: false,

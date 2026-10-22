@@ -13,7 +13,7 @@
  */
 
 import { describe, expect, it, vi } from 'vitest';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 
 import { AssistantLauncher, AssistantPanel } from '../assistant/AssistantPanel';
@@ -454,7 +454,8 @@ describe('describing somebody you met', () => {
     await ask('Met Eddie at the mixer');
     await waitFor(() => expect(screen.getByText('Save this contact')).toBeTruthy());
     fireEvent.click(screen.getByText('Save this contact'));
-    await waitFor(() => expect(screen.getByText(/did not; it will retry/)).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByText(/another did not; the queue will retry it/)).toBeTruthy());
   });
 
   it('refuses to save somebody with neither a name nor a business', async () => {
@@ -510,7 +511,7 @@ describe('the saved summary is still editable', () => {
     fireEvent.click(screen.getByText('Save this contact'));
     await waitFor(() => expect(screen.getByText('Contact saved.')).toBeTruthy());
 
-    fireEvent.click(screen.getByText('Something is wrong, let me fix it'));
+    fireEvent.click(screen.getByText('Edit saved details'));
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Eddy Claus' } });
     fireEvent.click(screen.getByText('Save the change'));
 
@@ -523,8 +524,8 @@ describe('the saved summary is still editable', () => {
 
 /* ============================================= recording what happened === */
 
-describe('recording a contact that already happened', () => {
-  const touchReply = answer({
+/** A matched contact, recorded. Used by several blocks below. */
+const touchReply = answer({
     proposal: proposal({
       intent: 'record',
       leadId: 'l-jamie',
@@ -534,10 +535,11 @@ describe('recording a contact that already happened', () => {
         channel: 'in person', outcome: 'She will send the photos', nextAction: 'Chase the photos',
         nextDueDate: null,
       },
-      facts: [],
-    }),
-  });
+    facts: [],
+  }),
+});
 
+describe('recording a contact that already happened', () => {
   it('records it against the right contact with the same immediate action suggestion', async () => {
     const { calls } = harness({ reply: touchReply });
     await ask('I ran into Chef Jamie at the market on Monday');
@@ -551,7 +553,7 @@ describe('recording a contact that already happened', () => {
     expect(calls.touch[0].nextDueDate).toBe(today());
     expect(calls.touch[0].evidence).toBe('User report');
 
-    await waitFor(() => expect(screen.getByText('Contact recorded.')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('Conversation recorded.')).toBeTruthy());
   });
 
   it('will not record anything without the day it happened', async () => {
@@ -980,7 +982,7 @@ describe('one input produces the complete contact-to-message plan', () => {
     const initial = (screen.getByLabelText('The first message') as HTMLTextAreaElement).value;
     expect(initial).toContain('the chamber mixer');
     fireEvent.click(screen.getByText('Record this'));
-    await waitFor(() => expect(screen.getByText('Contact recorded.')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('Conversation recorded.')).toBeTruthy());
     expect((screen.getByLabelText('The first message') as HTMLTextAreaElement).value).toBe(initial);
     expect(calls.touch).toHaveLength(1);
     expect(calls.touch[0].nextDueDate).toBe(today());
@@ -1086,7 +1088,7 @@ describe('one input produces the complete contact-to-message plan', () => {
     expect(before.length).toBeGreaterThan(0);
 
     fireEvent.click(screen.getByText('Record this'));
-    await waitFor(() => expect(screen.getByText('Contact recorded.')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('Conversation recorded.')).toBeTruthy());
 
     // After saving: still there, with the handoff buttons, and no second Ask.
     expect((screen.getByLabelText('The first message') as HTMLTextAreaElement).value).toBe(before);
@@ -1175,6 +1177,143 @@ describe('one input produces the complete contact-to-message plan', () => {
     expect(calls.updates.filter((entry) => entry.table === 'leads')).toEqual([]);
   });
 
+  it('replaces the review with a plain statement that it saved', async () => {
+    /*
+     * The confusion this fixes. Alberto pressed Record this once, the screen
+     * changed in a way he could not read, and he could not tell whether
+     * anything had been saved. It had: the record, the activity, the draft and
+     * both syncs all landed. Nothing said so.
+     */
+    const { calls } = harness({ reply: touchReply });
+    await ask('Caught up with Chef Jamie yesterday');
+    await waitFor(() => expect(screen.getByText('Record this')).toBeTruthy());
+
+    fireEvent.click(screen.getByText('Record this'));
+
+    // Said once, plainly, in the words of the thing that happened.
+    await waitFor(() => expect(screen.getByText('Conversation recorded.')).toBeTruthy());
+    expect(screen.getByText('Conversation recorded.').getAttribute('role')).toBe('status');
+
+    // And the review it replaces is gone, so nothing tells somebody to record
+    // what is already recorded.
+    expect(screen.queryByText('Record this')).toBeNull();
+    expect(screen.queryByText(/Next: record it/)).toBeNull();
+
+    // The message and its actions are here instead.
+    expect(screen.getByLabelText('The first message')).toBeTruthy();
+    expect(screen.getByText('Copy, not sent')).toBeTruthy();
+    expect(screen.getByText(/Next: copy the message or open Messages/)).toBeTruthy();
+    expect(calls.touch).toHaveLength(1);
+  });
+
+  it('calls the edit control what it does, not what it feels like', async () => {
+    // "Something is wrong, let me fix it" read as an error the app was
+    // reporting and as an offer to repair it. It is neither.
+    const { calls } = harness({ reply: touchReply });
+    await ask('Caught up with Chef Jamie yesterday');
+    await waitFor(() => expect(screen.getByText('Record this')).toBeTruthy());
+    fireEvent.click(screen.getByText('Record this'));
+
+    await waitFor(() => expect(screen.getByText('Edit saved details')).toBeTruthy());
+    expect(screen.queryByText(/Something is wrong/)).toBeNull();
+    // It opens fields. It does not repair anything, and nothing about the
+    // record was wrong in the first place.
+    expect(calls.touch).toHaveLength(1);
+  });
+
+  it('says it is working, and will not take a second press while it does', async () => {
+    let release: (() => void) | null = null;
+    const { calls, value } = harness({ reply: touchReply });
+    const original = value.recordConversation!;
+    value.recordConversation = async (input) => {
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      return original(input);
+    };
+
+    await ask('Caught up with Chef Jamie yesterday');
+    await waitFor(() => expect(screen.getByText('Record this')).toBeTruthy());
+
+    fireEvent.click(screen.getByText('Record this'));
+    await waitFor(() => expect(screen.getByText('Recording...')).toBeTruthy());
+
+    // Pressing again while it is in flight does nothing.
+    fireEvent.click(screen.getByText('Recording...'));
+    expect((screen.getByText('Recording...') as HTMLButtonElement).disabled).toBe(true);
+
+    release!();
+    await waitFor(() => expect(screen.getByText('Conversation recorded.')).toBeTruthy());
+    expect(calls.touch).toHaveLength(1);
+  });
+
+  it('keeps the edits and offers a safe retry when saving fails', async () => {
+    const { calls, value } = harness({ reply: touchReply });
+    let attempts = 0;
+    value.recordConversation = async (input) => {
+      attempts += 1;
+      calls.touch.push(input);
+      if (attempts === 1) {
+        return {
+          ok: false, activityId: null, reused: false, leadId: null,
+          occurredOn: null, nextDueDate: null,
+          error: 'the connection dropped before the record was confirmed',
+        };
+      }
+      return {
+        ok: true, activityId: 'a-retry', reused: false, leadId: input.leadId,
+        occurredOn: input.occurredOn, nextDueDate: null, error: null,
+      };
+    };
+
+    await ask('Caught up with Chef Jamie yesterday');
+    await waitFor(() => expect(screen.getByLabelText('The first message')).toBeTruthy());
+
+    const mine = 'My own wording, which must survive a failure.';
+    fireEvent.change(screen.getByLabelText('The first message'), { target: { value: mine } });
+    fireEvent.click(screen.getByText('Record this'));
+
+    // The specific reason, not "that did not save".
+    await waitFor(() =>
+      expect(screen.getByText(/the connection dropped before the record was confirmed/))
+        .toBeTruthy());
+    // The edit is still here, and so is the button.
+    expect((screen.getByLabelText('The first message') as HTMLTextAreaElement).value).toBe(mine);
+    expect(screen.getByText('Record this')).toBeTruthy();
+
+    fireEvent.click(screen.getByText('Record this'));
+    await waitFor(() => expect(screen.getByText('Conversation recorded.')).toBeTruthy());
+
+    /*
+     * The retry carried the same token as the first attempt.
+     *
+     * That is what makes it safe: a first attempt that actually wrote the
+     * record before the answer was lost is recognised by the database rather
+     * than written again.
+     */
+    expect(calls.touch).toHaveLength(2);
+    expect(calls.touch[1].token).toBe(calls.touch[0].token);
+  });
+
+  it('tells syncing, synced and failed apart', async () => {
+    for (const [drain, expected] of [
+      [{ ran: true, succeeded: 2, failed: 0 }, /Saved and synced\./],
+      [{ ran: true, succeeded: 1, failed: 1 }, /One sync finished and another did not/],
+      [{ ran: true, succeeded: 0, failed: 2 }, /the sync did not go through/],
+      [{ ran: false, succeeded: 0, failed: 0 }, /are syncing/],
+    ] as const) {
+      harness({ reply: touchReply, drain });
+      await ask('Caught up with Chef Jamie yesterday');
+      await waitFor(() => expect(screen.getByText('Record this')).toBeTruthy());
+      fireEvent.click(screen.getByText('Record this'));
+
+      await waitFor(() => expect(screen.getByText(expected)).toBeTruthy());
+      // The record is safe in every one of them. Only the sync sentence moves.
+      expect(screen.getByText('Conversation recorded.')).toBeTruthy();
+      cleanup();
+    }
+  });
+
   it('keeps an explicitly selected reminder and records one send even after a double press', async () => {
     const { calls } = harness({});
     await ask('Met someone; promised examples.');
@@ -1250,7 +1389,7 @@ describe('one input produces the complete contact-to-message plan', () => {
     await ask('Met ZZ Test Harness, promised examples. 305 555 0199.');
     await waitFor(() => expect(screen.getByText('Record this')).toBeTruthy());
     fireEvent.click(screen.getByText('Record this'));
-    await waitFor(() => expect(screen.getByText('Contact recorded.')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('Conversation recorded.')).toBeTruthy());
     expect(calls.updates.some(call => call.id === 'l-new' && call.patch.phone === '305 555 0199')).toBe(true);
     expect(calls.capture).toEqual([]);
     expect(calls.sent).toEqual([]);

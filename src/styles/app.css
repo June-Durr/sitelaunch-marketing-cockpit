@@ -1673,3 +1673,14 @@ table.data td.num { white-space: nowrap; }
 @media (max-width: 900px) {
   .profile-form-compact .form-grid { grid-template-columns: 1fr; }
 }
+
+/* The banner that answers "did that work?" before anything else is read. */
+.asst-saved-head {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.86rem;
+  color: var(--charcoal);
+}
+.asst-saved-mark { display: inline-flex; color: var(--green); }
+.asst-sync-waiting { color: var(--amber); }

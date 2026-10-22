@@ -135,12 +135,25 @@ function ResultLinks({ saved }: { saved: SavedRecord }) {
 /** What the queued syncs are actually doing. Never a claim beyond what is known. */
 function SyncLine({ saved }: { saved: SavedRecord }) {
   if (saved.sync === 'none') return null;
+  /*
+   * What the sync is doing, in four words rather than one hopeful one.
+   *
+   * The save and the sync are separate claims: the record is already safe in
+   * every one of these, and only the second sentence changes.
+   */
   const words = {
     queued: 'Saved here. The calendar and the sheet are syncing.',
     synced: 'Saved and synced.',
-    partial: 'Saved. One sync finished and something else in the queue did not; it will retry.',
+    partial: 'Saved. One sync finished and another did not; the queue will retry it.',
+    failed:
+      'Saved here, but the sync did not go through. The queue retries on its own, '
+      + 'so nothing is lost; the calendar is just behind for now.',
   };
-  return <p className="asst-sync">{words[saved.sync]}</p>;
+  return (
+    <p className={saved.sync === 'synced' ? 'asst-sync' : 'asst-sync asst-sync-waiting'}>
+      {words[saved.sync]}
+    </p>
+  );
 }
 
 /* ------------------------------------------------------- the saved summary --- */
@@ -165,16 +178,50 @@ function SavedCard({ turn }: { turn: AssistantTurn }) {
   const [confirmedFollowUp, setConfirmedFollowUp] = useState<{ date: string | null } | null>(null);
   const shownFollowUp = confirmedFollowUp ? confirmedFollowUp.date : saved.nextDueDate;
 
+  /*
+   * What just happened, said in the words of the thing that happened.
+   *
+   * "Contact recorded" was the line for a saved conversation, which reads as
+   * though a contact was created. Somebody who had just pressed Record this
+   * could not tell whether it had worked.
+   */
   const what = {
     contact: saved.reused ? 'This contact was already saved.' : 'Contact saved.',
-    touch: saved.reused ? 'This was already recorded.' : 'Contact recorded.',
+    touch: saved.reused
+      ? 'This conversation was already recorded.'
+      : 'Conversation recorded.',
     draft: 'Draft saved. Nothing has been sent.',
     sent: 'Recorded as sent.',
   }[saved.kind];
 
+  /** What to do next, at the stage this card is actually in. */
+  const nextStepLine = {
+    contact: 'Next: copy the message or open Messages, then tell me once you have sent it.',
+    touch: 'Next: copy the message or open Messages, then tell me once you have sent it.',
+    draft: 'Next: send it from wherever you send messages, then tell me you did.',
+    sent: 'Nothing else needed. The follow-up below is already on their record.',
+  }[saved.kind];
+
   return (
     <div className="asst-card asst-card-saved">
-      <p className="asst-saved-head">{what}</p>
+      {/*
+        A banner rather than a line of prose, and announced, because the one
+        question somebody has at this moment is whether it worked.
+      */}
+      <p className="asst-saved-head" role="status">
+        <span className="asst-saved-mark" aria-hidden="true">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+            <path
+              d="M2 7.5l3.2 3.2L12 4"
+              stroke="currentColor"
+              strokeWidth="1.8"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+        </span>
+        {what}
+      </p>
 
       <dl className="asst-summary">
         <div>
@@ -220,6 +267,8 @@ function SavedCard({ turn }: { turn: AssistantTurn }) {
 
       {!confirmedFollowUp ? <SyncLine saved={saved} /> : null}
       <ResultLinks saved={{ ...saved, nextDueDate: shownFollowUp }} />
+
+      <p className="asst-hint asst-next-action">{nextStepLine}</p>
 
       {/*
         A saved record is filing until something goes out, so the message comes
@@ -296,8 +345,15 @@ function SavedCard({ turn }: { turn: AssistantTurn }) {
           </div>
         </div>
       ) : saved.kind === 'draft' ? null : (
+        /*
+         * Named for what it does, not for how it feels.
+         *
+         * "Something is wrong, let me fix it" read as an error the app was
+         * reporting, and as an offer to repair it automatically. It is neither:
+         * it opens the fields of a record that saved perfectly well.
+         */
         <button className="btn btn-quiet" onClick={() => setEditing(true)}>
-          Something is wrong, let me fix it
+          Edit saved details
         </button>
       )}
     </div>
@@ -444,7 +500,7 @@ function CaptureCard({ turn }: { turn: AssistantTurn }) {
             })
           }
         >
-          Save this contact
+          {busy ? 'Saving...' : 'Save this contact'}
         </button>
       </div>
 
@@ -606,7 +662,7 @@ function TouchCard({ turn }: { turn: AssistantTurn }) {
             })
           }
         >
-          Record this
+          {busy ? 'Recording...' : 'Record this'}
         </button>
       </div>
 

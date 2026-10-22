@@ -194,8 +194,40 @@ for (const flow of ['new', 'matched', 'thin']) {
     const saveButton = page.getByRole('button', { name: /^(Save this contact|Record this)$/ });
     await saveButton.click();
 
-    const savedHead = page.getByText(/^(Contact saved\.|Contact recorded\.)$/);
+    const savedHead = page.getByText(/^(Contact saved\.|Conversation recorded\.)$/);
     await savedHead.waitFor({ state: 'visible', timeout: 10_000 });
+
+    /*
+     * The transition itself, which is what somebody could not read.
+     *
+     * The review has to be gone, the statement has to be announced, and nothing
+     * may still be telling them to record what is already recorded.
+     */
+    check(
+      `${label}: the saved statement is announced`,
+      (await savedHead.getAttribute('role')) === 'status',
+      await savedHead.textContent(),
+    );
+    check(
+      `${label}: the review it replaces is gone`,
+      await page.getByRole('button', { name: /^(Save this contact|Record this)$/ }).count() === 0
+      && await page.getByText(/Next: (save them|record it)/).count() === 0,
+    );
+    check(
+      `${label}: the next action is the one that is actually next`,
+      await page.getByText(/Next: copy the message or open Messages/).count() > 0,
+    );
+    check(
+      `${label}: the edit control is named for what it does`,
+      await page.getByRole('button', { name: 'Edit saved details' }).count() === 1
+      && await page.getByText(/Something is wrong/).count() === 0,
+    );
+    check(
+      `${label}: the sync state is stated rather than implied`,
+      await page.getByText(/Saved and synced\.|are syncing|did not go through|queue will retry/)
+        .count() > 0,
+      (await page.locator('.asst-sync').first().textContent() ?? '').slice(0, 60),
+    );
 
     const keptBody = await page.getByLabel('The first message').inputValue();
     check(`${label}: the edited wording survives the save`, keptBody === edit, keptBody.slice(0, 50));

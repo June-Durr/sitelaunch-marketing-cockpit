@@ -68,6 +68,24 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
   const [loaded, setLoaded] = useState<{ leadId: string | null; rows: MessageDraft[] }>({
     leadId: null, rows: [],
   });
+
+  /*
+   * One token per turn, held across retries.
+   *
+   * A save that fails leaves the person looking at a button to press again, and
+   * the reason it failed may well be that the answer got lost on the way back
+   * rather than that nothing was written. A fresh token on the retry would then
+   * write the record twice. Reusing it means the database recognises the second
+   * attempt and hands back what the first one wrote.
+   */
+  const saveTokens = useRef<Map<number, string>>(new Map());
+  const tokenFor = useCallback((turnId: number, what: string) => {
+    const existing = saveTokens.current.get(turnId);
+    if (existing) return existing;
+    const minted = pressToken(`${what}-${turnId}`);
+    saveTokens.current.set(turnId, minted);
+    return minted;
+  }, []);
   const nextId = useRef(0);
 
   /*
@@ -162,11 +180,22 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
         setTurns((previous) =>
           previous.map((turn) => {
             if (turn.id !== turnId || turn.kind !== 'assistant' || !turn.saved) return turn;
-            const sync = result.succeeded === 0
-              ? 'queued'
+
+            /*
+             * Four outcomes, and they are not interchangeable.
+             *
+             * Nothing succeeding used to be reported as still queued, so a sync
+             * that failed outright said "syncing" and kept saying it. A failure
+             * is not a wait, and somebody reading the screen needs to be able
+             * to tell the difference.
+             */
+            const sync = result.failed > 0 && result.succeeded === 0
+              ? 'failed'
               : result.failed > 0
                 ? 'partial'
-                : 'synced';
+                : result.succeeded > 0
+                  ? 'synced'
+                  : 'queued';
             return { ...turn, saved: { ...turn.saved, sync } };
           }),
         );
@@ -403,7 +432,7 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
         );
 
         const outcome = await capture({
-          token: pressToken(`capture-${turnId}`),
+          token: tokenFor(turnId, 'capture'),
           name: edited.name.trim() === '' ? null : edited.name.trim(),
           organization: edited.organization.trim() === '' ? null : edited.organization.trim(),
           role: turn.proposal.person.role,
@@ -455,7 +484,7 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
         setBusy(false);
       }
     },
-    [captureContact, drainFor, patchTurn, turns, keepInitialMessage, clearFirstAction],
+    [captureContact, drainFor, patchTurn, turns, keepInitialMessage, clearFirstAction, tokenFor],
   );
 
   const saveTouch = useCallback(
@@ -469,7 +498,7 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
       try {
         const outcome = await record({
           leadId: edited.leadId,
-          token: pressToken(`touch-${turnId}`),
+          token: tokenFor(turnId, 'touch'),
           occurredOn: edited.occurredOn,
           summary: edited.summary,
           channel: edited.channel.trim() === '' ? null : edited.channel.trim(),
@@ -516,7 +545,10 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
         setBusy(false);
       }
     },
-    [drainFor, leads, patchTurn, recordConversation, turns, keepInitialMessage, clearFirstAction, keepTouchHandle],
+    [
+      clearFirstAction, drainFor, keepInitialMessage, keepTouchHandle, leads, patchTurn,
+      recordConversation, tokenFor, turns,
+    ],
   );
 
   const refreshDrafts = useCallback(

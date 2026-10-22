@@ -51,7 +51,7 @@ export interface SavedRecord {
    * committed and the calendar is not updated yet. Nothing claims 'synced'
    * until the worker says so.
    */
-  sync: 'none' | 'queued' | 'synced' | 'partial';
+  sync: 'none' | 'queued' | 'synced' | 'partial' | 'failed';
   /** Wording from the initial review; never requires a second Ask. */
   firstMessage?: string;
   /**
