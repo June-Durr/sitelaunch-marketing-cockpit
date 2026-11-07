@@ -216,6 +216,19 @@ describe('the details disclosure', () => {
     expect(screen.getByText('Invented Person')).toBeTruthy();
   });
 
+  it('opens the inputs at the line that was pressed', () => {
+    render(
+      <DetailDisclosure rows={rows}>
+        <input aria-label="Name input" />
+        <input aria-label="Business input" />
+        <input aria-label="Met on input" type="date" />
+      </DetailDisclosure>,
+    );
+    // Pressing a gap is the way to fill it in, with the cursor already there.
+    fireEvent.click(screen.getByText('Day not known'));
+    expect(document.activeElement).toBe(screen.getByLabelText('Met on input'));
+  });
+
   it('counts nothing missing when every row has a value', () => {
     render(
       <DetailDisclosure rows={[{ label: 'Name', value: 'Invented Person' }]}>
