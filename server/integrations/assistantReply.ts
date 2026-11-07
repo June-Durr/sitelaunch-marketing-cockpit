@@ -95,7 +95,7 @@ function text(value: unknown, limit: number): string | null {
   const trimmed = value.trim();
   if (trimmed === '') return null;
   // Models reach for an em dash constantly, and the house style has none.
-  const cleaned = trimmed.replace(/\s*—\s*/g, ', ');
+  const cleaned = trimmed.replace(/\s*-\s*/g, ', ');
   return cleaned.length > limit ? `${cleaned.slice(0, limit).trimEnd()}...` : cleaned;
 }
 
@@ -248,13 +248,15 @@ export function readProposal(
   return {
     intent,
     reply,
-    question: text(body.question, MAX_QUESTION),
-    leadId: leadId === '' ? null : leadId,
+    question: intent === 'task'
+      ? (conversation.nextDueDate ? null : 'When should this be due?')
+      : text(body.question, MAX_QUESTION),
+    leadId: intent === 'task' || leadId === '' ? null : leadId,
     person,
     conversation,
-    draft,
-    facts,
-    references,
+    draft: intent === 'task' ? { channel: null, body: null, language: null } : draft,
+    facts: intent === 'task' ? [] : facts,
+    references: intent === 'task' ? [] : references,
     corrections,
   };
 }

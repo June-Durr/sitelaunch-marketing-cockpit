@@ -241,6 +241,13 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
               ? turn.text
               : [
                   turn.text,
+                  turn.proposal?.intent === 'task'
+                    ? [
+                        turn.proposal.conversation.nextAction,
+                        turn.proposal.conversation.summary,
+                        turn.proposal.question,
+                      ].filter(Boolean).join(' / ')
+                    : null,
                   turn.proposal?.draft.body
                     ? `The message I wrote, ${turn.proposal.draft.body.length} characters:`
                       + `\n${turn.proposal.draft.body}`
@@ -289,14 +296,15 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
         };
         const shortError = SHORT[answer.status] ?? answer.error ?? answer.status;
 
-        const settled = answer.proposal?.leadId ?? built.focusLeadId;
+        const isTask = answer.proposal?.intent === 'task';
+        const settled = isTask ? null : answer.proposal?.leadId ?? built.focusLeadId;
         if (settled && settled !== focusLeadId) setFocusLeadId(settled);
 
         addTurn({
           kind: 'assistant',
           text: answer.proposal?.reply ?? shortError,
           proposal: answer.proposal,
-          candidates,
+          candidates: isTask ? [] : candidates,
           leadId: settled,
           model: answer.model,
           costMicros: answer.costMicros,
