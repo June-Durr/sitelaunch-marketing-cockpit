@@ -111,6 +111,19 @@ describe('reading a day', () => {
 });
 
 describe('reading a proposal', () => {
+  it('keeps an internal task away from the pinned contact and asks for a missing due date', () => {
+    const result = readProposal(answer({
+      intent: 'task', lead_id: 'lead-1',
+      conversation: { next_action: 'Finish ReCircle website', summary: 'Test the mobile visitor action.' },
+      draft: { body: 'Hi Tina' },
+    }), context(), 'ReCircle website: finish and test on mobile')!;
+    expect(result.intent).toBe('task');
+    expect(result.question).toBe('When should this be due?');
+    expect(result.leadId).toBeNull();
+    expect(result.draft.body).toBeNull();
+    expect(result.conversation.nextAction).toBe('Finish ReCircle website');
+  });
+
   it('returns null when the answer is not JSON at all', () => {
     expect(readProposal('I am afraid I cannot do that.', context(), 'hello')).toBeNull();
   });

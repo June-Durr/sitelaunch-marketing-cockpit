@@ -102,7 +102,7 @@ export const PROVENANCES = [
   'contact_stated', 'user_stated', 'user_impression', 'assistant_inferred',
 ] as const;
 
-export const INTENTS = ['capture', 'record', 'draft', 'answer', 'clarify'] as const;
+export const INTENTS = ['capture', 'record', 'draft', 'answer', 'task', 'clarify'] as const;
 
 export type Intent = (typeof INTENTS)[number];
 
@@ -138,7 +138,7 @@ export const REPLY_SCHEMA: Record<string, unknown> = {
       description:
         'capture: a new person to add. record: contact that already happened. '
         + 'draft: a message to write or revise. answer: a question about what is '
-        + 'in the Cockpit. clarify: not enough to act on yet.',
+        + 'in the Cockpit. task: internal work to put on the Tasks list. clarify: not enough to act on yet.',
     },
     reply: {
       type: 'string',
@@ -274,6 +274,21 @@ export function buildInstructions(context: AssistantContext): string {
     'Do not say a task is done, a follow-up is scheduled, or a calendar event exists.',
     'Do not use a contact id that is not in the context below.',
     '',
+    'INTERNAL WORK OR CONTACT',
+    'Use task when the user describes their own project work with next steps,',
+    'or asks to add work to their task list. A company heading, a pinned person,',
+    'and first-person plans do not mean outreach. Example: ReCircle Society:',
+    'Wix update 80% done. Next: recover a before screenshot, finish the update,',
+    'and test mobile. That is one internal task with those steps in its notes.',
+    'For task put the title in conversation.next_action and progress and steps',
+    'in conversation.summary. Put an explicitly supplied due date in',
+    'conversation.next_due_date. If no date was supplied, ask only when it is',
+    'due; keep the task title and notes. Interpret a short date reply as answering',
+    'that question using the preceding user message. Leave lead_id, person, draft,',
+    'and all unrelated fields empty. Do not use contact cadence for a task.',
+    'Capture or record requires evidence of a person or actual contact, and draft',
+    'requires a request for outward wording. Never invent a recipient from context.',
+    '',
     'PROVENANCE, WHICH IS THE POINT',
     'Every fact carries who is making the claim, and there are four kinds.',
     'contact_stated is what the contact themselves said. Evidence from their side.',
@@ -292,7 +307,7 @@ export function buildInstructions(context: AssistantContext): string {
     'ASKING',
     'At most one question per reply, and only when the answer changes what gets',
     'written. A missing surname is not worth a question; which of two people this',
-    'is, or whether a promise was theirs or the user’s, is. Save what you are sure',
+    'is, or whether a promise was theirs or the user's, is. Save what you are sure',
     'of and ask about the rest in the same reply.',
     '',
     'DATES AND FOLLOW-UPS',

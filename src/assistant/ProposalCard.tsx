@@ -14,11 +14,12 @@
  * queued until the worker reports otherwise.
  */
 
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 
 import { Field, Tag } from '../components/primitives';
 import { useData } from '../data/context';
+import { blankCalendarSync } from '../data/factories';
 import { leadLabel } from '../lib/leadLabel';
 import { FirstContact } from './FirstContact';
 import { ContactPlan } from './ContactPlan';
@@ -813,11 +814,59 @@ function AnswerLinks({ turn }: { turn: AssistantTurn }) {
   );
 }
 
+function TaskCard({ turn }: { turn: AssistantTurn }) {
+  const { insert } = useData();
+  const { setOpen } = useAssistant();
+  const [status, setStatus] = useState<'ready' | 'saving' | 'saved' | 'failed'>('ready');
+  const inFlight = useRef(false);
+  const plan = turn.proposal?.conversation;
+  const title = plan?.nextAction;
+  const due = plan?.nextDueDate;
+  if (!title) return null;
+
+  async function save() {
+    if (!title || !due || inFlight.current || status === 'saved') return;
+    inFlight.current = true;
+    setStatus('saving');
+    try {
+      await insert('tasks', {
+        title, due_date: due, notes: plan?.summary ?? null, task_type: 'marketing_action',
+        status: 'open', content_item_id: null, lead_id: null, deleted_at: null,
+        last_operation: null, window_type: null, completed_at: null,
+        follow_up_rule_managed: false, ...blankCalendarSync(), is_seed: false,
+      });
+      setStatus('saved');
+    } catch {
+      setStatus('failed');
+    } finally {
+      inFlight.current = false;
+    }
+  }
+
+  return (
+    <section className="asst-card" aria-label="Task review">
+      <p><strong>{title}</strong></p>
+      {plan?.summary ? <p>{plan.summary}</p> : null}
+      {due ? <p>Due {formatDay(due)}</p> : null}
+      {status === 'saved' ? (
+        <p role="status">Task added. <Link to="/tasks" onClick={() => setOpen(false)}>Open Tasks</Link></p>
+      ) : due && status !== 'failed' ? (
+        <button className="btn btn-primary" disabled={status === 'saving'} onClick={() => void save()}>
+          {status === 'saving' ? 'Adding task' : 'Add to Tasks'}
+        </button>
+      ) : null}
+      {status === 'failed' ? <p role="alert">Could not confirm the save. Check Tasks before adding this again.</p> : null}
+    </section>
+  );
+}
+
 export function ProposalCard({ turn }: { turn: AssistantTurn }) {
   if (turn.saved && turn.saved.kind !== 'draft') return <SavedCard turn={turn} />;
   if (!turn.proposal) return null;
 
   switch (turn.proposal.intent) {
+    case 'task':
+      return <TaskCard turn={turn} />;
     case 'capture':
       return <CaptureCard turn={turn} />;
     case 'record':

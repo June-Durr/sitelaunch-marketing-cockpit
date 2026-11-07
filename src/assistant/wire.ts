@@ -69,7 +69,7 @@ export interface AssistantContext {
  */
 export type AssistantOperation = 'capture' | 'brief' | 'draft';
 
-export type AssistantIntent = 'capture' | 'record' | 'draft' | 'answer' | 'clarify';
+export type AssistantIntent = 'capture' | 'record' | 'draft' | 'answer' | 'task' | 'clarify';
 
 export interface ProposedFact {
   kind:

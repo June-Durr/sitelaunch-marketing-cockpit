@@ -130,6 +130,7 @@ function harness(options: {
   drain?: { ran: boolean; succeeded: number; failed: number };
   noAssistant?: boolean;
   updateFailures?: number;
+  insertTask?: DataContextValue["insert"];
 }) {
   Object.defineProperty(navigator, 'clipboard', { configurable: true,
     value: { writeText: vi.fn(async () => {}) } });
@@ -147,7 +148,7 @@ function harness(options: {
     loading: false,
     error: null,
     refresh: async () => {},
-    insert: unused,
+    insert: options.insertTask ?? unused,
     insertMany: unused,
     update: (async (table: string, id: string, patch: Record<string, unknown>) => {
       calls.updates.push({ table, id, patch });
@@ -1552,3 +1553,40 @@ describe('when it cannot work', () => {
   });
 });
 
+
+describe('internal work in Ask', () => {
+  const update = 'ReCircle Society: Wix update 80% done. Next: finish and test on mobile.';
+  const conversation = { ...proposal().conversation, nextAction: 'Finish ReCircle Society website',
+    summary: 'Wix edits saved, publication unconfirmed. Finish and test on mobile.' };
+
+  it('asks for a due date in chat without a contact or save form', async () => {
+    const insertTask = vi.fn(async () => ({} as never));
+    harness({ insertTask, reply: answer({ proposal: proposal({
+      intent: 'task', question: 'When should this be due?',
+      conversation: { ...conversation, nextDueDate: null },
+    }) }) });
+    await ask(update);
+    expect(await screen.findByText('When should this be due?')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Add to Tasks' })).toBeNull();
+    expect(screen.queryByText('Your message, ready now.', { exact: false })).toBeNull();
+    expect(insertTask).not.toHaveBeenCalled();
+  });
+
+  it('adds internal work to Tasks only after confirmation', async () => {
+    const insertTask = vi.fn(async () => ({} as never));
+    harness({ insertTask, reply: answer({ proposal: proposal({
+      intent: 'task', conversation: { ...conversation, nextDueDate: '2026-11-09' },
+    }) }) });
+    await ask(update + ' Due November 9.');
+    const button = await screen.findByRole('button', { name: 'Add to Tasks' });
+    expect(insertTask).not.toHaveBeenCalled();
+    fireEvent.click(button);
+    fireEvent.click(button);
+    expect(await screen.findByRole('link', { name: 'Open Tasks' })).toBeTruthy();
+    expect(insertTask).toHaveBeenCalledTimes(1);
+    expect(insertTask).toHaveBeenCalledWith('tasks', expect.objectContaining({
+      title: conversation.nextAction, due_date: '2026-11-09', notes: conversation.summary,
+      lead_id: null, status: 'open',
+    }));
+  });
+});
